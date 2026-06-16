@@ -23,31 +23,31 @@ tiny_http = "0.11"
 log = "0.4.21"
 anyhow = "1"
 tauri-plugin-sample = { path = "./tauri-plugin-sample/" }
-tauri-plugin-http = { path = "../../../../plugins-workspace/plugins/http" }
-tauri-plugin-os = { path = "../../../../plugins-workspace/plugins/os" }
-tauri-plugin-fs = { path = "../../../../plugins-workspace/plugins/fs" }
-tauri-plugin-shell = { path = "../../../../plugins-workspace/plugins/shell" }
-tauri-plugin-clipboard-manager = { path = "../../../../plugins-workspace/plugins/clipboard-manager" }
-tauri-plugin-process = { path = "../../../../plugins-workspace/plugins/process" }
-tauri-plugin-updater = { path = "../../../../plugins-workspace/plugins/updater" }
-tauri-plugin-autostart = { path = "../../../../plugins-workspace/plugins/autostart" }
-tauri-plugin-log = { path = "../../../../plugins-workspace/plugins/log" }
-tauri-plugin-notification = { path = "../../../../plugins-workspace/plugins/notification" }
+tauri-plugin-http = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-os = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-fs = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-shell = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-clipboard-manager = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-process = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-updater = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-autostart = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-log = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-notification = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
 sentry = { version = "0.42", default-features = false, features = ["reqwest", "rustls", "backtrace", "contexts", "panic", "debug-images"] }
-tauri-plugin-sentry = { path = "../../../../sentry-tauri" }
+tauri-plugin-sentry = { git = "https://github.com/Eulogizethesun/sentry-tauri", branch = "ohdev-git" }
 chrono = "0.4"
 url = "2"
 
 [target.'cfg(not(target_env = "ohos"))'.dependencies]
-tauri-plugin-dialog = { path = "../../../../plugins-workspace/plugins/dialog" }
+tauri-plugin-dialog = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
 
 [target.'cfg(target_env = "ohos")'.dependencies]
 napi-ohos = { version = "1.1" }
 napi-derive-ohos = { version = "1.1" }
 hilog = "*"
-tauri-plugin-dialog = { path = "../../../../plugins-workspace/plugins/dialog" }
-tauri-plugin-single-instance = { path = "../../../../plugins-workspace/plugins/single-instance" }
-tauri-plugin-global-shortcut = { path = "../../../../plugins-workspace/plugins/global-shortcut" }
+tauri-plugin-dialog = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-single-instance = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-global-shortcut = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
 
 [dependencies.tauri]
 path = "../../../crates/tauri"
