@@ -11,22 +11,52 @@ description: 编译 Tauri OpenHarmony 项目（examples/api），生成 HAP 包�
 > 例如本地布局为 `/d/xuqiu/tauri-2.0/{tauri,openharmony-ability}` 时，`PROJECT_ROOT=/d/xuqiu/tauri-2.0`。
 > 使用前请先 `export PROJECT_ROOT=...` 或在 env.sh 中设置。
 
-## 一键构建部署
+## 构建方式
+
+### 方式一：cargo tauri ohos run（推荐）
 
 ```bash
+cd ${PROJECT_ROOT}/tauri/examples/api/src-tauri
 source ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/scripts/env.sh
-bash ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/scripts/run-tests.sh "" desktop
+cargo tauri ohos run --device-type desktop
 ```
 
-第二个参数为设备类型：`desktop`（PC/桌面，tray/menu 需要）或 `mobile`（手机/平板）。
+一条龙完成：前端构建 → Rust 交叉编译 → HAP 打包签名 → 安装 → 启动。
+
+`--device-type` 参数：
+- `desktop` — PC/桌面设备（cfg(desktop)，Tray/Menu 功能需要）
+- `mobile` — 手机/平板（cfg(mobile)）
+
+> **注意**：此命令不包含自动测试（VITE_AUTOTEST）和 test-report 拉取。如需自动测试，使用方式二。
+
+### 方式二：run-tests.sh（含自动测试）
+
+```bash
+OHOS_DEVICE_TYPE=desktop bash ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/scripts/run-tests.sh "" desktop
+```
+
+**注意**：必须先设置 `OHOS_DEVICE_TYPE` 环境变量再调用脚本。不要先 `source env.sh`，因为 `env.sh` 会设置 `OHOS_DEVICE_TYPE` 默认值，可能覆盖你传入的参数。
 
 脚本自动完成全部流程：
 1. 检测 `openharmony-ability/` 源码变更，自动重建 HAR 包并 ohpm install
 2. 前端构建（pnpm + vite，VITE_AUTOTEST=true）
+   - Step 2: 构建 @tauri-apps/api（首次或缺失时）
+   - Step 2.5: 构建插件 dist-js（每次执行，防止 git pull 后插件产物过期）
+   - Step 3: 前端 vite 构建
 3. Rust 交叉编译（aarch64-unknown-linux-ohos，release，--features prod）
 4. 拷贝 .so → hvigorw assembleHap（自动禁用/恢复 tauriPlugin，使用 build-profile.json5 中的证书签名）
 5. 卸载旧版 → 安装已签名 HAP → 启动
 6. 等待 30s → 拉取 test-report → 分析结果
+
+### 方式三：cargo tauri ohos build --app（多形态打包）
+
+```bash
+cd ${PROJECT_ROOT}/tauri/examples/api/src-tauri
+source ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/scripts/env.sh
+cargo tauri ohos build --app
+```
+
+根据 `tauri.conf.json` 中 `bundle.openHarmony.deviceTypes` 配置，同时构建 mobile 和 desktop 两个 HAP。
 
 ## 环境要求
 
@@ -38,22 +68,34 @@ bash ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/scripts/run-tests.sh "" des
 
 首次使用如果 DevEco Studio 自动检测失败：
 ```bash
-echo 'DEVECO_HOME="/d/app/DevEco-Studio"' > ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/scripts/.env.local
+echo 'DEVECO_HOME="/d/ohos-deveco"' > ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/scripts/.env.local
 ```
 
-## 设备类型（OHOS_DEVICE_TYPE）
+## 设备类型与项目结构
 
-| 值 | 说明 | 编译特性 |
-|---|------|---------|
-| `desktop` | PC/桌面设备 | `cfg(desktop)` — Tray/Menu 功能需要此模式 |
-| `mobile` | 手机/平板（默认） | `cfg(mobile)` |
+PR #59 将 app 拆分为 mobile 和 desktop 两个 entry 模块：
+
+| `OHOS_DEVICE_TYPE` | 激活模块 | `cfg` 特性 | deviceTypes（tauri.conf.json） |
+|---|------|---------|------|
+| `desktop` | `entry_desktop` | `cfg(desktop)` | `{ "desktop": ["2in1"] }` |
+| `mobile` | `entry_mobile` | `cfg(mobile)` | `{ "mobile": ["phone", "tablet"] }` |
+
+`tauri.conf.json` 中的 deviceTypes 配置格式：
+```json
+"openHarmony": {
+  "deviceTypes": {
+    "mobile": ["phone", "tablet"],
+    "desktop": ["2in1"]
+  }
+}
+```
 
 ## 脚本说明
 
 | 脚本 | 功能 |
 |------|------|
 | `env.sh` | 环境配置：CC/linker/JAVA_HOME/PATH，必须在其他脚本前 source |
-| `run-tests.sh` | 一键全流程（含模板检测、HAR 自动重建、tauriPlugin 自动禁用/恢复） |
+| `run-tests.sh` | 一键全流程（含模板检测、HAR 自动重建、tauriPlugin 自动禁用/恢复、自动测试） |
 | `build-ohos.sh` | 构建全流程（模板检测 → 前端 → Rust → .so → hvigorw 签名打包），自动处理 tauriPlugin |
 | `sign-and-install.sh` | 仅安装启动（使用 hvigorw 已签名的 HAP），不构建不签名 |
 
@@ -97,7 +139,8 @@ ohpm install --all
 `main_pages.json` 会被模板覆盖为仅包含 `pages/Index`，需要手动添加：
 
 ```json5
-// gen/ohos/entry/src/main/resources/base/profile/main_pages.json
+// gen/ohos/entry_desktop/src/main/resources/base/profile/main_pages.json
+// gen/ohos/entry_mobile/src/main/resources/base/profile/main_pages.json
 {
   "src": [
     "pages/Index",
@@ -107,30 +150,34 @@ ohpm install --all
 }
 ```
 
+> **注意**：PR #59 后 entry 模块拆分为 `entry_desktop/` 和 `entry_mobile/`，两个模块的 main_pages.json 都需要补充。
+
 - `TestTrayPage` 是 `TestTrayAbility`（QuickOperation 面板）的内容页面，缺少此路由注册会导致面板打开后内容为空。
 - `TransparencyTestPage` 是 WebView 容器透明背景测试页面（Float 子窗口穿透测试）。
 
 ### ③ TestTrayPage.ets 和 TestTrayAbility.ets 文件
 
-这两个文件不在模板中（属于 examples/api 项目特有），`tauri ohos init` 不会生成它们。如果之前删除了整个 `gen/ohos/` 目录，需要手动恢复：
-- `gen/ohos/entry/src/main/ets/pages/TestTrayPage.ets`
-- `gen/ohos/entry/src/main/ets/testtrayability/TestTrayAbility.ets`
-- `gen/ohos/entry/src/main/ets/pages/TransparencyTestPage.ets` ← WebView 透明度测试页面
+这两个文件不在模板中（属于 examples/api 项目特有），`tauri ohos init` 不会生成它们。如果之前删除了整个 `gen/ohos/` 目录，需要手动恢复到 `entry_desktop/` 和 `entry_mobile/`：
+- `gen/ohos/entry_desktop/src/main/ets/pages/TestTrayPage.ets`
+- `gen/ohos/entry_desktop/src/main/ets/testtrayability/TestTrayAbility.ets`
+- `gen/ohos/entry_desktop/src/main/ets/pages/TransparencyTestPage.ets`
+- `gen/ohos/entry_mobile/src/main/ets/pages/TestTrayPage.ets`
+- `gen/ohos/entry_mobile/src/main/ets/testtrayability/TestTrayAbility.ets`
+- `gen/ohos/entry_mobile/src/main/ets/pages/TransparencyTestPage.ets`
 
 **归档位置**: 这些文件已归档在 `.claude/skills/ohos-build/templates/` 目录下：
 - `templates/pages/TestTrayPage.ets`
 - `templates/testtrayability/TestTrayAbility.ets`
 - `templates/pages/TransparencyTestPage.ets`
 
-恢复命令：
+恢复命令（以 entry_desktop 为例，entry_mobile 同理）：
 ```bash
 cp ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/templates/pages/TestTrayPage.ets \
-     ${PROJECT_ROOT}/tauri/examples/api/src-tauri/gen/ohos/entry/src/main/ets/pages/
+     ${PROJECT_ROOT}/tauri/examples/api/src-tauri/gen/ohos/entry_desktop/src/main/ets/pages/
 cp ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/templates/pages/TransparencyTestPage.ets \
-     ${PROJECT_ROOT}/tauri/examples/api/src-tauri/gen/ohos/entry/src/main/ets/pages/
-# TestTrayAbility 需要复制到 testtrayability 目录
+     ${PROJECT_ROOT}/tauri/examples/api/src-tauri/gen/ohos/entry_desktop/src/main/ets/pages/
 cp ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/templates/testtrayability/TestTrayAbility.ets \
-     ${PROJECT_ROOT}/tauri/examples/api/src-tauri/gen/ohos/entry/src/main/ets/testtrayability/
+     ${PROJECT_ROOT}/tauri/examples/api/src-tauri/gen/ohos/entry_desktop/src/main/ets/testtrayability/
 ```
 
 ### ④ 扩展能力和权限（module.json5）
@@ -138,7 +185,8 @@ cp ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/templates/testtrayability/Tes
 `module.json5` 会被模板覆盖，需要手动补充 `TestTrayAbility` 扩展和 `SET_WINDOW_TRANSPARENT` 权限：
 
 ```json5
-// gen/ohos/entry/src/main/module.json5
+// gen/ohos/entry_desktop/src/main/module.json5
+// gen/ohos/entry_mobile/src/main/module.json5
 {
   "module": {
     // ... 其他配置保持不变 ...
@@ -190,6 +238,16 @@ cp ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/templates/testtrayability/Tes
    cargo install --path crates/tauri-cli --locked
    ```
    仅修改模板文件（`templates/` 下）不需要重装，`build-ohos.sh` 会自动检测模板 mtime 并重建 `gen/ohos/`。
+8. **插件 dist-js 自动构建** — `build-ohos.sh` Step 2.5 每次执行 `pnpm build` 构建 `plugins-workspace/` 下所有插件的 `dist-js`，防止 git pull/rebase 后插件产物过期导致测试失败（如 notification 插件 `index.js` 过期）。
+9. **cargo-mobile2 仓库** — `tauri-cli` 依赖 `cargo-mobile2`（位于 `${PROJECT_ROOT}/cargo-mobile2`）。如果 tauri-cli 编译报 `unresolved import cargo_mobile2::open_harmony::app`，说明 cargo-mobile2 需要 rebase 到 upstream/ohdev。
+10. **PR #59 双 Entry 模块** — 项目结构从单一 `entry/` 拆分为 `entry_desktop/` + `entry_mobile/`。`OHOS_DEVICE_TYPE` 决定激活哪个模块（`active_entry_module()` 返回 `entry_{form}`）。`cargo tauri ohos build --app` 同时构建两个模块。
+11. **@tauri ohpm junctions** — `ohpm install` 会删除 `@tauri/*` 本地链接（`oh_modules/@tauri/`）。每次 `ohpm install` 后需要手动重建 junction：
+    ```bash
+    cd gen/ohos && mkdir -p oh_modules/@tauri && for pkg in app notification global-shortcut dialog; do
+      src=""; case $pkg in app) src="tauri" ;; *) src="$pkg" ;; esac
+      [ -d "$src" ] && cmd //c "mklink /J \"oh_modules\\@tauri\\$pkg\" \"$(pwd -W)\\$src\"" 2>/dev/null
+    done
+    ```
 
 ## 设备日志与故障诊断
 
@@ -232,6 +290,7 @@ source ${PROJECT_ROOT}/tauri/.claude/skills/ohos-build/scripts/env.sh
 ohrs build --arch arm64          # 末尾 panic 是已知问题，不影响
 bash scripts/pack.sh
 tar -czf ability.har package
-cmd.exe /c "rmdir /s /q ${PROJECT_ROOT}\\tauri\\examples\\api\\src-tauri\\gen\\ohos\\entry\\oh_modules"
-cmd.exe /c "cd /d ${PROJECT_ROOT}\\tauri\\examples\\api\\src-tauri\\gen\\ohos\\entry && ohpm install"
+cd ${PROJECT_ROOT}/tauri/examples/api/src-tauri/gen/ohos
+ohpm install --all
+# 重建 @tauri junctions（见注意事项 #11）
 ```

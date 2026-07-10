@@ -60,6 +60,7 @@
 | TSFN 回调必须返回 **参数元组**, 不是 `Result<()>` | 返回 `()` = 空 JS 参数 (全部 `undefined`)。返回 `FnArgs { data: (arg1, arg2) }` |
 | **禁止** 使用 `callee_handled::<true>()` | napi-ohos 在 `CalleeHandled=true` 时自动在首位插入 `null`, 导致参数偏移。必须用 `callee_handled::<false>()` |
 | 裸 tuple 类型会序列化为 JS Array | 必须用 `FnArgs<>` 包装 tuple, 否则 JS 函数收到数组而非展开参数 |
+| **`Function::call` 也有同样 bug** | `func.call((arg1, arg2))` 裸 tuple 走通用 impl 只传 1 个参数。必须 `Function<'_, FnArgs<(T1,T2)>, R>` + `func.call(FnArgs { data: (arg1, arg2) })`。p1-window-vibrancy 的 set_window_blur 因此从未工作过 |
 | TSFN 数据必须通过泛型参数携带, 不是全局 Mutex | 全局 `Mutex<Option<Data>>` 中转模式在快速连续调用时产生数据竞态, 导致 freeze。每个 TSFN 调用独立 Box 入队, 天然隔离 |
 
 ### 2.3 NAPI 上下文限制
@@ -70,6 +71,7 @@
 | `statusBarManager.on()` 必须在 `addToStatusBar` 之后 200ms 注册 | OHOS 内部 `ScbServerReceiver` 在 `addToStatusBar` 后异步初始化。提前注册的 handler 被静默丢弃 |
 | NAPI `Env` 只在获取它的线程有效 | `MAIN_THREAD_ENV` 存储在 `thread_local!` 中, 其他线程调用 `get_main_thread_env()` 返回 `None` |
 | `ObjectRef` (napi_ref) 不是 Send/Sync | 必须通过 `Mutex<SendableHelper>` + `ptr::read` 跨线程共享, `unsafe impl Send/Sync` |
+| **hilog 在 NAPI 回调上下文抛 Argc mismatch** | 被 Rust NAPI `func.call` 调的 ArkTS 函数内部用 `hilog.info`/`hilog.error` 会抛 `"assertion (false) failed: Argc mismatch"`（疑 NAPI 重入限制）。异常被 catch 吞成 `failed: {}`。被 NAPI 调的函数内部禁用 hilog；纯 ArkTS 调用链（如 registerController）里 hilog 正常 |
 
 ---
 
@@ -122,6 +124,7 @@
 | 模块级 `@Builder function` 没有 `this` 上下文 | 全局 `@Builder` 无法访问组件实例属性和方法。只有 `@Component` 内的 `private @Builder` 方法才有 `this` |
 | 递归 `@Builder`（如子菜单渲染）必须在 `@Component` 内 | 模块级 `@Builder` 调用其他 `@Builder` 时, `this` 为 `undefined`, 导致 `TypeError`。这是 menu Phase 4→6→9 三次方案演进的根本原因 |
 | WebView 事件必须在 `@Builder` 内 pre-build 注册 | ArkUI 约束: 事件回调不能在 `@Builder` 外部动态绑定。所有 `onLoadIntercept`、`onPageBegin` 等必须在构建时注册 |
+| **`BuilderNode.update` 不刷新组件属性** | `.backdropBlur(data.style.blurRadius)` 等属性在 update 时不重新求值。build 时通过 `addWebview` 注入值；**运行时刷新用 `AttributeUpdater`**：`modifier.attribute?.backdropBlur(radius)` 立即触发组件更新（不需 @State, 适合 @Builder/BuilderNode）。vibrancy BlurModifier 用此机制刷新 backdropBlur/backgroundColor |
 
 ### 4.2 语义反转
 

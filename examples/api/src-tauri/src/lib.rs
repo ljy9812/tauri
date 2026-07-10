@@ -9,11 +9,12 @@ mod menu_plugin;
 mod tray;
 
 use cmd::EventTracker;
+use cmd::{DownloadTestMode, DownloadTestState};
 
 #[cfg(target_env = "ohos")]
 mod ohos_log {
   pub fn init() {
-    // 直接使用 hilog crate 初始化
+    // Initialize hilog crate for OHOS logging
     hilog::Builder::new()
       .set_tag("tauritest")
       .filter_level(log::LevelFilter::Trace)
@@ -46,66 +47,115 @@ pub struct PopupMenu<R: Runtime>(tauri::menu::Menu<R>);
 
 #[cfg_attr(any(mobile, target_env = "ohos"), tauri::mobile_entry_point)]
 pub fn run() {
-  #[cfg(target_env = "ohos")]
-  std::panic::set_hook(Box::new(|info| {
-    let msg = format!("PANIC: {info}\n");
-    let _ = std::fs::write("/data/storage/el2/base/cache/panic.log", &msg);
-    eprintln!("{msg}");
-  }));
-
   run_app(tauri::Builder::default(), |_app| {})
+}
+
+fn init_sentry() -> sentry::ClientInitGuard {
+  sentry::init((
+    option_env!("SENTRY_DSN").unwrap_or(""),
+    sentry::ClientOptions {
+      release: sentry::release_name!(),
+      debug: true, // Intentional for example app — enables verbose sentry logs for debugging
+      ..Default::default()
+    },
+  ))
 }
 
 pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
   builder: tauri::Builder<R>,
   setup: F,
 ) {
+  let _sentry_guard = init_sentry();
+
+  // Chain OHOS panic hook with sentry's: write panic.log then call sentry's hook
+  #[cfg(target_env = "ohos")]
+  {
+    let sentry_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+      let msg = format!("PANIC: {info}\n");
+      let _ = std::fs::write("/data/storage/el2/base/cache/panic.log", &msg);
+      eprintln!("{msg}");
+      sentry_hook(info);
+    }));
+  }
+
+  // sentry is auxiliary — init may return None with empty DSN, that's OK
+  let sentry_client = sentry::Hub::current().client();
+
+  // Minidump guard must live for the full app lifetime (captures native crashes)
+  #[cfg(all(not(target_os = "ios"), not(target_env = "ohos")))]
+  let _minidump_guard = sentry_client
+    .as_ref()
+    .map(|c| tauri_plugin_sentry::minidump::init(c));
+
+  let mut builder = builder;
+
   #[cfg(not(target_env = "ohos"))]
-  let builder = builder
-    .plugin(tauri_plugin_sample::init())
-    .plugin(tauri_plugin_notification::init())
-    .plugin(tauri_plugin_dialog::init())
-    .plugin(tauri_plugin_http::init())
-    .plugin(tauri_plugin_clipboard_manager::init())
-    .plugin(tauri_plugin_autostart::init(
-      tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-      None,
-    ));
+  {
+    builder = builder
+      .plugin(tauri_plugin_sample::init())
+      .plugin(tauri_plugin_notification::init())
+      .plugin(tauri_plugin_dialog::init())
+      .plugin(tauri_plugin_http::init())
+      .plugin(tauri_plugin_clipboard_manager::init())
+      .plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None,
+      ));
+    if let Some(ref client) = sentry_client {
+      builder = builder.plugin(tauri_plugin_sentry::init(client));
+    }
+  }
 
   // Register single-instance FIRST for early callback availability
   #[cfg(target_env = "ohos")]
-  let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-    log::info!("[single-instance] callback fired! args={:?}, cwd={:?}", args, cwd);
-    if let Some(window) = app.get_webview_window("main") {
-      let _ = window.set_focus();
-    }
-  }));
+  {
+    builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+      log::info!(
+        "[single-instance] callback fired! args={:?}, cwd={:?}",
+        args,
+        cwd
+      );
+      if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_focus();
+      }
+    }));
+  }
 
   #[cfg(target_env = "ohos")]
-  let builder = builder
-    .plugin(
-      tauri_plugin_log::Builder::default()
-        .level(log::LevelFilter::Trace)
-        .clear_targets()
-        .target(tauri_plugin_log::Target::new(
-          tauri_plugin_log::TargetKind::Stdout,
-        ))
-        .skip_logger()
-        .build(),
-    )
-    .plugin(tauri_plugin_fs::init())
-    .plugin(tauri_plugin_os::init())
-    .plugin(tauri_plugin_http::init())
-    .plugin(tauri_plugin_shell::init())
-    .plugin(tauri_plugin_process::init())
-    .plugin(tauri_plugin_updater::Builder::new().build())
-    .plugin(tauri_plugin_dialog::init())
-    .plugin(tauri_plugin_clipboard_manager::init())
-    // MacosLauncher::LaunchAgent is ignored on OHOS (macOS-specific parameter)
-    .plugin(tauri_plugin_autostart::init(
-      tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-      None,
-    ));
+  {
+    builder = builder
+      .plugin(
+        tauri_plugin_log::Builder::default()
+          .level(log::LevelFilter::Trace)
+          .clear_targets()
+          .target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::Stdout,
+          ))
+          .skip_logger()
+          .build(),
+      )
+      .plugin(tauri_plugin_fs::init())
+      .plugin(tauri_plugin_os::init())
+      .plugin(tauri_plugin_http::init())
+      .plugin(tauri_plugin_shell::init())
+      .plugin(tauri_plugin_process::init())
+      .plugin(tauri_plugin_updater::Builder::new().build())
+      .plugin(tauri_plugin_dialog::init())
+      .plugin(tauri_plugin_clipboard_manager::init())
+      .plugin(tauri_plugin_notification::init())
+      // MacosLauncher::LaunchAgent is ignored on OHOS (macOS-specific parameter)
+      .plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None,
+      ))
+      .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+  }
+
+  #[cfg(target_env = "ohos")]
+  if let Some(ref client) = sentry_client {
+    builder = builder.plugin(tauri_plugin_sentry::init(client));
+  }
 
   #[cfg(target_env = "ohos")]
   {
@@ -113,8 +163,7 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
     log::info!("OHOS log initialized via hilog + tauri_plugin_log(skip_logger)");
   };
 
-  #[allow(unused_mut)]
-  let mut builder = builder
+  builder = builder
     // Test append_invoke_initialization_script
     .append_invoke_initialization_script(r#"
       window.__TAURI_TEST_INIT_SCRIPT_RAN = true;
@@ -197,6 +246,7 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
       // Manage event tracker for testing
       app.manage(EventTracker::default());
       app.manage(cmd::NewWindowDenyState::default());
+      app.manage(DownloadTestState::new());
 
       #[cfg(all(desktop, not(test)))]
       {
@@ -244,24 +294,126 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
           // Add a custom header to test
           response.headers_mut().insert("X-Tauri-Test", tauri::http::HeaderValue::from_static("intercepted"));
         })
-        // 4. Test download intercept
+        // 4. Test download intercept (mode-aware for manual test scenarios)
         .on_download(move |_webview, event| {
-          log::info!("on_download event received");
+          log::info!("[DownloadTest] on_download event received");
+          let state = app_handle_download.state::<DownloadTestState>();
+          let mode = state.mode.lock().unwrap().clone();
+          log::info!("[DownloadTest] Current mode: {:?}", mode);
+
           match event {
             tauri::webview::DownloadEvent::Requested { url, destination } => {
-              log::info!("Download requested: {}", url);
-              log::info!("Default destination: {:?}", destination);
-              let _ = app_handle_download.emit("download-requested", url.to_string());
+              log::info!("[DownloadTest] Requested: url={}, dest={:?}", url, destination);
+
+              match mode {
+                DownloadTestMode::Default => {
+                  let _ = app_handle_download.emit("download-requested", url.to_string());
+                }
+                DownloadTestMode::CustomDir => {
+                  let custom_dir = std::path::PathBuf::from("/data/storage/el2/base/cache/downloads");
+                  let url_str = url.to_string();
+                  let filename = url_str.rsplit('/').next().unwrap_or("download.bin");
+                  *destination = custom_dir.join(filename);
+                  log::info!("[DownloadTest] CustomDir: redirected to {:?}", destination);
+                  let _ = app_handle_download.emit("download-requested", serde_json::json!({
+                    "url": url.to_string(),
+                    "destination": destination.to_string_lossy(),
+                    "mode": "CustomDir"
+                  }));
+                }
+                DownloadTestMode::ConfirmAllow => {
+                  log::info!("[DownloadTest] ConfirmAllow: simulating user confirmed download");
+                  let _ = app_handle_download.emit("download-requested", serde_json::json!({
+                    "url": url.to_string(),
+                    "destination": destination.to_string_lossy(),
+                    "mode": "ConfirmAllow",
+                    "confirmed": true
+                  }));
+                }
+                DownloadTestMode::BlockFileType => {
+                  let dangerous_exts = ["exe", "bat", "cmd", "sh", "apk"];
+                  let url_str = url.to_string();
+                  let ext = url_str.rsplit('.').next().unwrap_or("").to_lowercase();
+                  let blocked = dangerous_exts.contains(&ext.as_str());
+                  log::info!("[DownloadTest] BlockFileType: ext={}, blocked={}", ext, blocked);
+                  let _ = app_handle_download.emit("download-requested", serde_json::json!({
+                    "url": url.to_string(),
+                    "ext": ext,
+                    "blocked": blocked,
+                    "mode": "BlockFileType"
+                  }));
+                  if blocked {
+                    return false;
+                  }
+                }
+                DownloadTestMode::ProgressTracking => {
+                  log::info!("[DownloadTest] ProgressTracking: download started");
+                  let _ = app_handle_download.emit("download-requested", serde_json::json!({
+                    "url": url.to_string(),
+                    "destination": destination.to_string_lossy(),
+                    "mode": "ProgressTracking",
+                    "startedAt": chrono::Utc::now().to_rfc3339()
+                  }));
+                }
+                DownloadTestMode::AuditLog => {
+                  let audit_entry = serde_json::json!({
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "url": url.to_string(),
+                    "destination": destination.to_string_lossy(),
+                    "mode": "AuditLog",
+                    "action": "download_requested"
+                  });
+                  log::info!("[DownloadTest] AUDIT LOG: {}", audit_entry);
+                  let _ = app_handle_download.emit("download-requested", audit_entry);
+                }
+                DownloadTestMode::AutoRename => {
+                  if destination.exists() {
+                    let stem = destination.file_stem().unwrap_or_default().to_string_lossy();
+                    let ext = destination.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+                    let parent = destination.parent().unwrap_or(std::path::Path::new("."));
+                    let mut counter = 1;
+                    loop {
+                      let new_name = format!("{} ({}){}", stem, counter, ext);
+                      let new_path = parent.join(&new_name);
+                      if !new_path.exists() {
+                        log::info!("[DownloadTest] AutoRename: {:?} → {:?}", destination, new_path);
+                        *destination = new_path;
+                        break;
+                      }
+                      counter += 1;
+                    }
+                  }
+                  let _ = app_handle_download.emit("download-requested", serde_json::json!({
+                    "url": url.to_string(),
+                    "destination": destination.to_string_lossy(),
+                    "mode": "AutoRename"
+                  }));
+                }
+                DownloadTestMode::CancelAll => {
+                  log::info!("[DownloadTest] CancelAll: cancelling download for {}", url);
+                  let _ = app_handle_download.emit("download-requested", serde_json::json!({
+                    "url": url.to_string(),
+                    "mode": "CancelAll",
+                    "cancelled": true
+                  }));
+                  return false;
+                }
+              }
             }
             tauri::webview::DownloadEvent::Finished { url, path, success } => {
-              log::info!("Download finished: {}, success: {}, path: {:?}", url, success, path);
-              let _ = app_handle_download.emit("download-finished", (url.to_string(), success));
+              log::info!("[DownloadTest] Finished: url={}, success={}, path={:?}", url, success, path);
+              let _ = app_handle_download.emit("download-finished", serde_json::json!({
+                "url": url.to_string(),
+                "path": path.as_ref().map(|p| p.to_string_lossy().to_string()),
+                "success": success,
+                "mode": format!("{:?}", mode)
+              }));
             }
             _ => {
-              log::info!("Other download event");
+              log::info!("[DownloadTest] Other download event");
             }
           }
-          true // allow download
+          true
         });
 
       #[cfg(all(desktop, not(test)))]
@@ -303,15 +455,31 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
               let deny_state = app_.state::<cmd::NewWindowDenyState>();
               *deny_state.last_url.lock().unwrap() = Some(url.to_string());
               let should_deny = deny_state.deny.load(std::sync::atomic::Ordering::SeqCst);
+              let should_create = deny_state.create.load(std::sync::atomic::Ordering::SeqCst);
 
               // Emit event for frontend test verification
               let _ = app_.emit("new-window-requested", url.to_string());
 
               if should_deny {
-                log::info!("[OHOS] on_new_window: DENY for URL: {}", url);
+                log::debug!("[OHOS] on_new_window: DENY for URL: {}", url);
                 tauri::webview::NewWindowResponse::Deny
+              } else if should_create {
+                log::debug!("[OHOS] on_new_window: CREATE real OS window for URL: {}", url);
+                let builder = WebviewWindowBuilder::new(
+                  &app_,
+                  format!("new-{number}"),
+                  tauri::WebviewUrl::External(url.clone()),
+                )
+                .title(url.as_str());
+                match builder.build() {
+                  Ok(window) => tauri::webview::NewWindowResponse::Create { window },
+                  Err(e) => {
+                    log::error!("[OHOS] on_new_window: CREATE failed, falling back to Allow: {}", e);
+                    tauri::webview::NewWindowResponse::Allow(std::marker::PhantomData)
+                  }
+                }
               } else {
-                log::info!("[OHOS] on_new_window: ALLOW dialog for URL: {}", url);
+                log::debug!("[OHOS] on_new_window: ALLOW dialog for URL: {}", url);
                 tauri::webview::NewWindowResponse::Allow(std::marker::PhantomData)
               }
             }
@@ -321,7 +489,6 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
       let webview = window_builder.build()?;
 
       // Set window background to white to avoid black top bar on OHOS
-      // (OHOS default window background is black when transparent=false)
       let _ = webview.set_background_color(Some(tauri::window::Color(255, 255, 255, 255)));
 
       // Setup window event tracking
@@ -431,9 +598,8 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
             data: "something else".to_string(),
           };
 
-          webview_
-            .emit("rust-event", Some(reply))
-            .expect("failed to emit");
+          let _ = webview_
+            .emit("rust-event", Some(reply));
         });
       }
     });
@@ -456,6 +622,15 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
       cmd::test_eval_with_callback,
       cmd::test_navigate,
       cmd::test_reload,
+      cmd::cookie_test,
+      cmd::cookie_manual_test,
+      #[cfg(any(debug_assertions, feature = "devtools"))]
+      cmd::devtools_test,
+      #[cfg(any(debug_assertions, feature = "devtools"))]
+      cmd::devtools_open_only,
+      #[cfg(any(debug_assertions, feature = "devtools"))]
+      cmd::devtools_close_only,
+      cmd::set_bounds_test,
       cmd::create_isolated_window,
       cmd::dummy_command,
       cmd::create_window_with_custom_ua,
@@ -479,12 +654,21 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
       #[cfg(target_env = "ohos")]
       cmd::set_deny_new_window,
       #[cfg(target_env = "ohos")]
+      cmd::set_create_new_window,
+      #[cfg(target_env = "ohos")]
+      cmd::desktop_features_test,
+      #[cfg(target_env = "ohos")]
       cmd::get_last_new_window_url,
       #[cfg(target_env = "ohos")]
       cmd::get_ohos_version_info,
       cmd::test_web_page_snapshot,
+      cmd::test_create_pdf,
+      cmd::set_download_test_mode,
       #[cfg(desktop)]
       tray::simulate_tray_click,
+      #[cfg(debug_assertions)]
+      cmd::sentry_test_panic,
+      cmd::sentry_test_breadcrumb,
     ])
     .build(tauri::tauri_build_context!())
     .expect("error while building tauri application");
@@ -516,7 +700,7 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
         }
         RunEvent::ExitRequested { code, api: _api, .. } => {
           log::info!("[RunEvent] ExitRequested, code={:?}", code);
-          // 测试 prevent_exit 是否生效
+          // Test whether prevent_exit works
           // NOTE: This is test-only code. On OHOS LoopDestroyed path, prevent_exit()
           // cannot actually prevent exit (system is already tearing down), but it gives
           // user code a chance to run cleanup logic before RunEvent::Exit fires.
@@ -577,13 +761,13 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
         log::info!("CloseRequested for window: {}", label);
         #[cfg(target_env = "ohos")]
         {
-          // OHOS: 只对特定测试窗口调用 prevent_close() 并保持窗口打开
+          // OHOS: only call prevent_close() for specific test windows and keep them open
           if label.starts_with("test-prevent-close") {
             log::info!("[OHOS] calling prevent_close() for test window: {}", label);
             api.prevent_close();
-            // 不调用 destroy() - 这是测试窗口，应该保持打开
+            // Do not call destroy() - this is a test window, keep it open
           } else {
-            // 其他窗口：阻止默认关闭行为，然后显式销毁窗口
+            // Other windows: prevent default close behavior, then explicitly destroy
             log::info!("[OHOS] closing window: {}", label);
             api.prevent_close();
             _app_handle

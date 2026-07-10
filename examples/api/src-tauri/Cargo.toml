@@ -21,6 +21,7 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 tiny_http = "0.11"
 log = "0.4.21"
+anyhow = "1"
 tauri-plugin-sample = { path = "./tauri-plugin-sample/" }
 tauri-plugin-http = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
 tauri-plugin-os = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
@@ -31,11 +32,13 @@ tauri-plugin-process = { git = "https://github.com/Eulogizethesun/plugins-worksp
 tauri-plugin-updater = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
 tauri-plugin-autostart = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
 tauri-plugin-log = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-notification = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+sentry = { version = "0.42", default-features = false, features = ["reqwest", "rustls", "backtrace", "contexts", "panic", "debug-images"] }
+tauri-plugin-sentry = { git = "https://github.com/Eulogizethesun/sentry-tauri", branch = "ohdev-git" }
 chrono = "0.4"
 url = "2"
 
 [target.'cfg(not(target_env = "ohos"))'.dependencies]
-tauri-plugin-notification = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
 tauri-plugin-dialog = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
 
 [target.'cfg(target_env = "ohos")'.dependencies]
@@ -44,6 +47,7 @@ napi-derive-ohos = { version = "1.1" }
 hilog = "*"
 tauri-plugin-dialog = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
 tauri-plugin-single-instance = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+tauri-plugin-global-shortcut = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
 
 [dependencies.tauri]
 path = "../../../crates/tauri"
@@ -54,6 +58,8 @@ features = [
   "isolation",
   "macos-private-api",
   "tray-icon",
+  "unstable",
+  "webview-data-url",
 ]
 
 [dev-dependencies.tauri]
@@ -62,11 +68,12 @@ features = ["test"]
 
 [features]
 prod = ["tauri/custom-protocol"]
+devtools = ["tauri/devtools"]
 
 [profile.release]
-# 开启调试信息（最重要）
+# Enable debug info (most important for OHOS panic/crash debugging)
 debug = true
 
-# 可选：保留行号、变量名等更完整的调试信息（gdb、lldb、日志回溯都能用）
+# Optional: preserve line numbers and variable names for gdb/lldb/backtrace
 strip = false
-opt-level = 0  # 关闭优化，调试最清晰
+opt-level = 0  # Disable optimization for clearest debug experience

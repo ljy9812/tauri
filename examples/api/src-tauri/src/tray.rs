@@ -23,9 +23,11 @@ pub fn simulate_tray_click<R: Runtime>(
     _ => "leftClick",
   };
   tauri::ohos::openharmony_ability::statusbar::icon_click_sender()
-    .send(tauri::ohos::openharmony_ability::statusbar::StatusBarClickEvent::IconClick {
-      click_type: click_type.to_string(),
-    })
+    .send(
+      tauri::ohos::openharmony_ability::statusbar::StatusBarClickEvent::IconClick {
+        click_type: click_type.to_string(),
+      },
+    )
     .map_err(|e| format!("Failed to send tray click event: {}", e))?;
   Ok(())
 }
@@ -68,7 +70,14 @@ pub fn create_tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
   )?;
   let menu2 = Menu::with_items(
     app,
-    &[&toggle_i, &new_window_i, &switch_i, &toggle_qo_i, &quit_i, &remove_tray_i],
+    &[
+      &toggle_i,
+      &new_window_i,
+      &switch_i,
+      &toggle_qo_i,
+      &quit_i,
+      &remove_tray_i,
+    ],
   )?;
 
   let is_menu1 = AtomicBool::new(true);
@@ -91,8 +100,15 @@ pub fn create_tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
       // Tray's on_menu_event fires for ALL menu events (by tauri design).
       // Only execute actions for tray-specific item IDs.
       const TRAY_IDS: &[&str] = &[
-        "toggle", "new-window", "icon-1", "icon-2", "set-title",
-        "switch-menu", "toggle-qo", "quit", "remove-tray",
+        "toggle",
+        "new-window",
+        "icon-1",
+        "icon-2",
+        "set-title",
+        "switch-menu",
+        "toggle-qo",
+        "quit",
+        "remove-tray",
       ];
       if !TRAY_IDS.contains(&id) {
         return;
@@ -104,70 +120,71 @@ pub fn create_tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
         format!("tray:{}", id),
       );
       match event.id.as_ref() {
-      "quit" => {
-        app.exit(0);
-      }
-      "remove-tray" => {
-        app.remove_tray_by_id("tray-1");
-      }
-      "toggle" => {
-        if let Some(window) = app.get_webview_window("main") {
-          let new_title = if window.is_visible().unwrap_or_default() {
-            let _ = window.hide();
-            "Show"
+        "quit" => {
+          app.exit(0);
+        }
+        "remove-tray" => {
+          app.remove_tray_by_id("tray-1");
+        }
+        "toggle" => {
+          if let Some(window) = app.get_webview_window("main") {
+            let new_title = if window.is_visible().unwrap_or_default() {
+              let _ = window.hide();
+              "Show"
+            } else {
+              let _ = window.show();
+              let _ = window.set_focus();
+              "Hide"
+            };
+            toggle_i.set_text(new_title).unwrap();
+          }
+        }
+        "new-window" => {
+          let _webview =
+            tauri::WebviewWindowBuilder::new(app, "new", WebviewUrl::App("index.html".into()))
+              .title("Tauri")
+              .build()
+              .unwrap();
+        }
+        #[cfg(target_os = "macos")]
+        "set-title" => {
+          if let Some(tray) = app.tray_by_id("tray-1") {
+            let _ = tray.set_title(Some("Tauri"));
+          }
+        }
+        i @ "icon-1" | i @ "icon-2" => {
+          if let Some(tray) = app.tray_by_id("tray-1") {
+            let icon = if i == "icon-1" {
+              include_image!("../../.icons/icon.ico")
+            } else {
+              include_image!("../../.icons/tray_icon_with_transparency.png")
+            };
+            let _ = tray.set_icon(Some(icon));
+          }
+        }
+        "switch-menu" => {
+          let flag = is_menu1.load(Ordering::Relaxed);
+          let (menu, tooltip) = if flag {
+            (menu2.clone(), "Menu 2")
           } else {
-            let _ = window.show();
-            let _ = window.set_focus();
-            "Hide"
+            (menu1.clone(), "Tauri")
           };
-          toggle_i.set_text(new_title).unwrap();
+          if let Some(tray) = app.tray_by_id("tray-1") {
+            let _ = tray.set_menu(Some(menu));
+            let _ = tray.set_tooltip(Some(tooltip));
+          }
+          is_menu1.store(!flag, Ordering::Relaxed);
         }
-      }
-      "new-window" => {
-        let _webview =
-          tauri::WebviewWindowBuilder::new(app, "new", WebviewUrl::App("index.html".into()))
-            .title("Tauri")
-            .build()
-            .unwrap();
-      }
-      #[cfg(target_os = "macos")]
-      "set-title" => {
-        if let Some(tray) = app.tray_by_id("tray-1") {
-          let _ = tray.set_title(Some("Tauri"));
+        "toggle-qo" => {
+          if let Some(tray) = app.tray_by_id("tray-1") {
+            // Toggle QuickOperation off (demonstrates runtime update)
+            let _ = tray.set_quick_operation(None);
+          }
         }
-      }
-      i @ "icon-1" | i @ "icon-2" => {
-        if let Some(tray) = app.tray_by_id("tray-1") {
-          let icon = if i == "icon-1" {
-            include_image!("../../.icons/icon.ico")
-          } else {
-            include_image!("../../.icons/tray_icon_with_transparency.png")
-          };
-          let _ = tray.set_icon(Some(icon));
-        }
-      }
-      "switch-menu" => {
-        let flag = is_menu1.load(Ordering::Relaxed);
-        let (menu, tooltip) = if flag {
-          (menu2.clone(), "Menu 2")
-        } else {
-          (menu1.clone(), "Tauri")
-        };
-        if let Some(tray) = app.tray_by_id("tray-1") {
-          let _ = tray.set_menu(Some(menu));
-          let _ = tray.set_tooltip(Some(tooltip));
-        }
-        is_menu1.store(!flag, Ordering::Relaxed);
-      }
-      "toggle-qo" => {
-        if let Some(tray) = app.tray_by_id("tray-1") {
-          // Toggle QuickOperation off (demonstrates runtime update)
-          let _ = tray.set_quick_operation(None);
-        }
-      }
 
-      _ => {}
-    }})
+        _ => {}
+      }
+    })
     .on_tray_icon_event(|tray, event| {
       if let TrayIconEvent::Click {
         button: MouseButton::Left,

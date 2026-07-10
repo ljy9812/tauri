@@ -92,6 +92,9 @@ openspec update
 ├── muda/
 ├── tray-icon/
 ├── openharmony-ability/
+├── plugins-workspace/
+├── sentry-tauri/
+├── window-vibrancy/
 └── .mcp.json
 ```
 
@@ -105,6 +108,9 @@ openspec update
 | muda | https://github.com/Eulogizethesun/muda.git | ohdev |
 | tray-icon | https://github.com/Eulogizethesun/tray-icon.git | ohdev |
 | openharmony-ability | https://github.com/Eulogizethesun/openharmony-ability.git | ohdev |
+| plugins-workspace | https://github.com/Eulogizethesun/plugins-workspace.git | ohdev |
+| sentry-tauri | https://github.com/Eulogizethesun/sentry-tauri.git | ohdev |
+| window-vibrancy | https://github.com/Eulogizethesun/window-vibrancy.git | ohdev |
 
 ### 克隆缺失仓库
 

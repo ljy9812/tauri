@@ -2322,6 +2322,24 @@ impl<R: Runtime> WebviewWindow<R> {
   }
 }
 
+#[cfg(target_env = "ohos")]
+#[cfg_attr(docsrs, doc(cfg(target_env = "ohos")))]
+impl<R: Runtime> WebviewWindow<R> {
+  /// Create a PDF from the current webview content and save to the given path.
+  ///
+  /// The callback receives `true` on success, `false` on failure.
+  ///
+  /// Only available on OpenHarmony.
+  pub fn create_pdf(
+    &self,
+    path: impl AsRef<std::path::Path>,
+    config: Option<tauri_runtime::PdfConfig>,
+    callback: impl Fn(bool) + Send + 'static,
+  ) -> crate::Result<()> {
+    self.webview.create_pdf(path, config, callback)
+  }
+}
+
 /// Webview APIs.
 impl<R: Runtime> WebviewWindow<R> {
   /// Executes a closure, providing it with the webview handle that is specific to the current platform.

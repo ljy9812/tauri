@@ -31,6 +31,7 @@ TaskCreate: "Step 2: 代码检视（多轮迭代）"
 TaskCreate: "Step 3: 提交/输出 findings"
 TaskCreate: "Step 4: 编译部署"
 TaskCreate: "Step 5: 清理"
+TaskCreate: "Step 6: Checklist 演进 — 提取通用规则"
 ```
 
 创建后 TaskUpdate 第一个为 `in_progress`，开始执行。
@@ -210,6 +211,7 @@ Round 3 (专项深挖): 1 new finding (0 🔴, 0 🟡, 1 🔵)
 Round 4 (专项深挖): 0 new findings → dry_count = 1
 Round 5 (专项深挖): 0 new findings → dry_count = 2 → EXIT
 Total: 9 unique findings
+Adversarial Verify: 9 findings → 7 survived, 2 refuted
 ```
 
 #### 2e. 生成最终 Findings
@@ -234,6 +236,56 @@ Finding 结构:
 ✅ tauri#25: 5 findings (1 Blocker, 2 Major, 2 Minor)
 ✅ tao#8: 2 findings (0 Blocker, 1 Major, 1 Minor)
 ```
+
+#### 2f. 对抗性自检 (Adversarial Self-Verify)
+
+**目的**：减少 false positive，提升检视质量。对每个 finding 派发独立 subagent 尝试反驳，只有通过验证的 finding 才会进入 Step 3。误报会损害审查者信任。
+
+**执行方式**：对 2e 产出的每个 finding，使用 `Agent` 工具派发一个质疑者 subagent：
+
+```
+Agent("尝试反驳 finding"):
+  prompt: |
+    你是一个代码检视质疑者。以下是 Claude 对 PR 的检视发现：
+
+    ## Finding
+    - 描述: <description>
+    - 文件: <file>:<line>
+    - 严重级别: <severity>
+    - 分类: <category>
+
+    ## 你的任务
+    1. 阅读该文件的完整源码（Read 工具）
+    2. 阅读 PR diff（gh pr diff）
+    3. 尝试证明这个 finding 是误报：
+       - 代码是否真的有问题？还是审查者理解有误？
+       - 是否有上下文信息（注释、文档、调用方）使其合理？
+       - 建议的修复是否可行？会不会引入新问题？
+
+    4. 给出判断：
+       - refuted: true — 误报，理由: ...
+       - refuted: false — 确认真阳性，理由: ...
+
+    ## 偏向规则
+    如果不确定，默认 refuted: true。宁可漏掉一个真阳性，也不提交一个误报。
+```
+
+**过滤规则**：
+- `refuted: true` → 丢弃该 finding（误报）
+- `refuted: false` → 保留该 finding（确认真阳性）
+- 不确定 → 默认丢弃
+
+**可并行执行**：多个 finding 的质疑者 subagent 可以同时派发（互不依赖）。
+
+输出：
+```
+## Adversarial Verify
+tauri#25: 5 findings → 3 survived, 2 refuted
+  Refuted: F3 (cfg gate already in parent module), F5 (Mutex::lock unwrap allowed per G2)
+tao#8: 2 findings → 2 survived, 0 refuted
+```
+
+过滤后的 findings 列表传给 Step 3 提交。
 
 ### Step 3: 提交/输出 findings
 
@@ -406,6 +458,99 @@ Build: ✅ Success
 Autotest: ✅ 42/42 passed
 
 All reviews submitted to GitHub.
+```
+
+### Step 6: Checklist 演进 — 提取通用规则
+
+检视完成后，审视本次产生的所有 findings（含被对抗性验证 refuted 的），判断是否有可提取的通用规则应补充到 checklist。
+
+#### 6a. 审视 findings
+
+回顾本次检视的全部 findings，逐条评估：
+
+- 这个 finding 对应的问题是否是**反复出现的模式**？（同类问题在多个文件/多个 PR 中出现）
+- 这个 finding 对应的检查项是否**已经被 checklist 覆盖**？
+- 如果未覆盖，是否可以抽象为一个**通用的检查规则**？
+
+**适合提取为 checklist 项的特征**：
+- 同类问题在本次检视中出现 ≥2 次
+- 该问题属于 OHOS 适配的特有陷阱，开发者容易忽略
+- 可以用一句简洁的规则描述
+
+**不适合提取的情况**：
+- 过于具体的代码问题（仅某个函数特有的 bug）
+- 已经被现有 checklist 项覆盖（检查是否遗漏而非规则缺失）
+
+#### 6b. 更新 checklist
+
+如果有新的通用规则，读取当前 checklist：
+
+```bash
+cat D:\workspace\tauri\tauri\.claude\skills\tauri-ohos-code-review\references\review-checklist.md
+```
+
+按以下格式追加新项到对应分类下（A-H）：
+
+```markdown
+- [ ] <分类编号><序号>: <规则描述>
+```
+
+示例：
+```markdown
+## G — 代码质量
+
+- [ ] G5: OHOS 平台的 `log` 宏使用 `hilog` 而非 `println!`（`println!` 在 OHOS 上无输出）
+```
+
+如果新规则不属于任何现有分类，可新增分类（如 `## I — xxx`）。
+
+#### 6c. Commit + Push + PR
+
+如果 checklist 有变更：
+
+```bash
+cd D:\workspace\tauri\tauri
+
+# 确认 remote 配置
+git remote -v
+# origin = 用户 fork, upstream = Eulogizethesun/tauri
+
+# 确保在 ohdev 分支且是最新
+git checkout ohdev
+git fetch upstream
+git rebase upstream/ohdev
+
+# 提交变更
+git add .claude/skills/tauri-ohos-code-review/references/review-checklist.md
+git commit -m "chore(review): update review checklist with new items from PR review"
+
+# Push 到用户 fork
+git push origin ohdev
+
+# 创建 PR 到 upstream
+gh pr create \
+  --repo Eulogizethesun/tauri \
+  --base ohdev \
+  --head <your-username>:ohdev \
+  --title "chore(review): update review checklist with new items" \
+  --body "## Changes\n- 新增 checklist 项，来源于本次 PR 检视中发现的通用模式\n\n## New Items\n- <列出新增的 checklist 项>"
+```
+
+#### 6d. 输出
+
+```
+## Step 6: Checklist Evolution
+New items added: 2
+  - G5: OHOS log 宏使用 hilog 而非 println!
+  - H8: OHOS 权限声明需在 module.json5 的 requestPermissions 中
+
+PR created: https://github.com/Eulogizethesun/tauri/pull/XX
+```
+
+如果没有新增项：
+```
+## Step 6: Checklist Evolution
+No new items — all findings covered by existing checklist.
 ```
 
 ## 参考文档

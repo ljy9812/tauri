@@ -177,6 +177,76 @@ fn exec(
       let (config, _metadata) =
         super::open_harmony::get_config(&app, &tauri_config, None, &Default::default());
 
+      // Register template variables for OHOS templates
+      let version = tauri_config.version.as_deref().unwrap_or("1.0.0");
+      let publisher = tauri_config
+        .bundle
+        .publisher
+        .clone()
+        .unwrap_or_else(|| {
+          // Fall back to the second segment of the identifier (e.g. "com.tauri.api" -> "tauri");
+          // if the identifier has no dot, fall back to the product name instead of an empty string.
+          tauri_config
+            .identifier
+            .split('.')
+            .nth(1)
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+              tauri_config.product_name.clone().unwrap_or_default()
+            })
+        });
+      let short_description = tauri_config
+        .bundle
+        .short_description
+        .clone()
+        .unwrap_or_else(|| {
+          tauri_config
+            .product_name
+            .clone()
+            .unwrap_or_default()
+        });
+      let version_code = tauri_config
+        .bundle
+        .open_harmony
+        .version_code
+        .unwrap_or_else(|| {
+          tauri_config
+            .version
+            .as_ref()
+            .and_then(|v| semver::Version::parse(v).ok())
+            .map(|v| {
+              let code = v.major * 1000000 + v.minor * 1000 + v.patch;
+              code.clamp(1, u32::MAX as u64) as u32
+            })
+            .unwrap_or(1)
+        });
+      map.insert("version", version);
+
+      // bundle sub-fields: {{bundle.publisher}}, {{bundle.short-description}}, {{bundle.open-harmony.*}}
+      let mut bundle_map = serde_json::Map::new();
+      bundle_map.insert("publisher".to_string(), serde_json::to_value(&publisher).unwrap_or_default());
+      bundle_map.insert("short-description".to_string(), serde_json::to_value(&short_description).unwrap_or_default());
+
+      let mut ohos_map = serde_json::Map::new();
+      ohos_map.insert("version-code".to_string(), serde_json::to_value(version_code).unwrap_or_default());
+      bundle_map.insert("open-harmony".to_string(), serde_json::Value::Object(ohos_map));
+
+      // Per-form deviceTypes for the dual-entry template: each entry's module.json5
+      // emits its list via `{{{form-device-types}}}` (pre-serialized JSON string so
+      // triple-brace renders it verbatim; a Value::Array would render unquoted).
+      let (mobile_device_types_str, desktop_device_types_str) = {
+        let conf = &tauri_config.bundle.open_harmony.device_types;
+        let m = super::open_harmony::device_types_for_form(conf, "mobile");
+        let d = super::open_harmony::device_types_for_form(conf, "desktop");
+        (
+          serde_json::to_string(&m).unwrap_or_else(|_| r#"["phone","tablet"]"#.into()),
+          serde_json::to_string(&d).unwrap_or_else(|_| r#"["2in1"]"#.into()),
+        )
+      };
+
+      map.insert("bundle", bundle_map);
+
       let detected_plugins =
         super::open_harmony::plugins::detect_all_plugins(dirs.tauri).unwrap_or_default();
 
@@ -211,6 +281,8 @@ fn exec(
         (handlebars, map),
         skip_targets_install,
         plugin_metadata.clone(),
+        &mobile_device_types_str,
+        &desktop_device_types_str,
       )?;
 
       if !plugin_metadata.is_empty() {

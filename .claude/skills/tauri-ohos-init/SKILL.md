@@ -101,6 +101,8 @@ Superpowers 提供 TDD、systematic debugging、subagent 驱动开发等方法�
 | tray-icon | `tray-icon` | https://github.com/Eulogizethesun/tray-icon.git | ohdev |
 | openharmony-ability | `openharmony-ability` | https://github.com/Eulogizethesun/openharmony-ability.git | ohdev |
 | plugins-workspace | `plugins-workspace` | https://github.com/Eulogizethesun/plugins-workspace.git | ohdev |
+| sentry-tauri | `sentry-tauri` | https://github.com/Eulogizethesun/sentry-tauri.git | ohdev |
+| window-vibrancy | `window-vibrancy` | https://github.com/Eulogizethesun/window-vibrancy.git | ohdev |
 
 对每个仓库：
 - 目录存在 → "✓ <repo> 就绪"
@@ -131,6 +133,8 @@ Superpowers 提供 TDD、systematic debugging、subagent 驱动开发等方法�
 | tray-icon | ✓ / ✗ |
 | openharmony-ability | ✓ / ✗ |
 | plugins-workspace | ✓ / ✗ |
+| sentry-tauri | ✓ / ✗ |
+| window-vibrancy | ✓ / ✗ |
 
 全部就绪 → 可以开始 OHOS 适配工作。
 有缺失项 → 请按上方步骤完成安装。

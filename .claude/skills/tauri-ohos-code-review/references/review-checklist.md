@@ -16,7 +16,8 @@
 - [ ] A1: OHOS 特有代码使用 `cfg(target_env = "ohos")` 或组合 gate
 - [ ] A2: Linux 依赖加了 `not(target_env = "ohos")` 排除（OHOS `target_os` 是 `"linux"`）
 - [ ] A3: desktop/mobile 区分使用 `cfg(all(target_env = "ohos", desktop))` / `cfg(all(target_env = "ohos", mobile))`
-- [ ] A4: `OHOS_DEVICE_TYPE` 正确使用（`desktop` 含 tray/menu bar，`mobile` 默认）
+- [ ] A4: `OHOS_DEVICE_TYPE` 正确使用（`desktop` 默认，含 tray/menu bar；`mobile` 手机/平板）
+- [ ] A5: `cfg_attr(mobile, ...)` 类宏门控必须覆盖 OHOS desktop — 当 `OHOS_DEVICE_TYPE=desktop` 时 `cfg(mobile)` 为 false（tauri-build 中 `device_type != "desktop"`），`cfg_attr(mobile, tauri::mobile_entry_point)` 等宏不会展开 → 缺少 `openharmony` NAPI 入口 → HAP 加载失败。正确写法：`cfg_attr(any(mobile, target_env = "ohos"), ...)`
 
 ## B — 平台隔离
 
@@ -47,6 +48,7 @@
 
 - [ ] F1: 所有仓调用鸿蒙系统能力必须经过 `openharmony-ability`
 - [ ] F2: 禁止在其他仓直接调用 ArkTS API 或 NAPI 函数
+- [ ] F3: ArkTS↔Rust 错误传播对称 — ArkTS 端注册/调用失败（如 inputConsumer 返回 801/4200002/4200003）必须反向通知 Rust，Rust 据实更新内部状态（HashMap 等）并返回 `Err`；禁止 ArkTS 仅 log、Rust 仍写状态并返回 `Ok(())`，否则导致 Rust 侧认为已注册/注销但系统侧实际未生效的不一致
 
 ## G — 代码质量
 
@@ -54,6 +56,7 @@
 - [ ] G2: 错误处理完整（非测试代码中避免 unwrap/expect，**但 `Mutex::lock().unwrap()` 除外** — 仅当持锁线程 panic 时才会 poison，实际极少发生，属标准用法）
 - [ ] G3: 异步回调路径完整（无 callback 丢失/drop）
 - [ ] G4: API 签名跨仓一致（如 wry 与 tauri 之间的参数传递）
+- [ ] G5: `#[serde(default)]` 不应用于语义上必填的字段（如 `id: String`, `name: String`）— 否则反序列化会静默接受空字符串，导致无效数据被存储而无法查找 → 🟡
 
 ## H — 仓库级规范
 

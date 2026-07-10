@@ -6,9 +6,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Read CLI params BEFORE sourcing env.sh (env.sh sets default "mobile" which would shadow $2)
+# Read CLI params BEFORE sourcing env.sh (env.sh sets default which would shadow $2)
 DEVICE_SN="${DEVICE_SN:-$1}"
-OHOS_DEVICE_TYPE="${OHOS_DEVICE_TYPE:-$2}"
+# $2 takes priority over inherited OHOS_DEVICE_TYPE (fixes stale parent shell value)
+if [ -n "$2" ]; then
+    OHOS_DEVICE_TYPE="$2"
+fi
 export OHOS_DEVICE_TYPE
 
 source "$SCRIPT_DIR/env.sh"

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vibrancy</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+  }
+  .wrap {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    border: 4px solid rgba(255, 255, 255, 0.85);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #ffffff;
+    text-shadow: 0 0 6px rgba(0, 0, 0, 0.9), 0 0 12px rgba(0, 0, 0, 0.7);
+  }
+  h1 { font-size: 30px; margin: 0 0 8px; }
+  p { font-size: 16px; margin: 0; opacity: 0.9; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 id="label">VIBRANCY</h1>
+    <p>transparent page</p>
+  </div>
+  <script>
+    const p = new URLSearchParams(location.search).get('label');
+    if (p) { document.getElementById('label').textContent = p; }
+  </script>
+</body>
+</html>

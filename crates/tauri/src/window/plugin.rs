@@ -105,8 +105,13 @@ mod commands {
     label: Option<String>,
     value: Option<Color>,
   ) -> crate::Result<()> {
-    log::debug!("[tauri-window] set_background_color called with value: {:?}", value);
-    get_window(window, label)?.set_background_color(value).map_err(Into::into)
+    log::debug!(
+      "[tauri-window] set_background_color called with value: {:?}",
+      value
+    );
+    get_window(window, label)?
+      .set_background_color(value)
+      .map_err(Into::into)
   }
   setter!(set_size_constraints, WindowSizeConstraints);
   setter!(set_theme, Option<Theme>);
@@ -260,7 +265,11 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 
   init_script.push_str(
     &Drag {
-      os_name: std::env::consts::OS,
+      os_name: if cfg!(target_env = "ohos") {
+        "ohos"
+      } else {
+        std::env::consts::OS
+      },
     }
     .render_default(&Default::default())
     .unwrap()

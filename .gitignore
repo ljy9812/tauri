@@ -33,7 +33,6 @@ streaming_example_test_video.mp4
 
 # examples /gen directory
 /examples/**/src-tauri/gen/
-!/examples/api/src-tauri/gen/
 /bench/**/src-tauri/gen/
 
 # logs

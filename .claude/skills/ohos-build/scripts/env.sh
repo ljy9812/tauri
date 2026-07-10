@@ -74,9 +74,9 @@ export PROJECT_ROOT
 
 # ─── 设备类型配置 ───
 # OHOS_DEVICE_TYPE: mobile 或 desktop
-# - mobile: 编译为移动端模式（默认）
-# - desktop: 编译为桌面端模式，启用 desktop cfg 功能
-export OHOS_DEVICE_TYPE="${OHOS_DEVICE_TYPE:-mobile}"
+# - mobile: 编译为移动端模式
+# - desktop: 编译为桌面端模式，启用 desktop cfg 功能（默认）
+export OHOS_DEVICE_TYPE="${OHOS_DEVICE_TYPE:-desktop}"
 
 # ─── OHOS NDK & SDK (ohrs/hvigorw 需要) ───
 # ohrs expects OHOS_NDK_HOME pointing to the SDK root (not /native subdirectory)

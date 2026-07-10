@@ -10,9 +10,14 @@ source "$SCRIPT_DIR/env.sh"
 API_DIR="$PROJECT_ROOT/examples/api"
 SRC_TAURI="$API_DIR/src-tauri"
 OHOS_PROJECT="$SRC_TAURI/gen/ohos"
-SIGNED_HAP="$OHOS_PROJECT/entry/build/default/outputs/default/entry-default-signed.hap"
+if [ "$OHOS_DEVICE_TYPE" = "desktop" ]; then
+    ENTRY_DIR="entry_desktop"
+else
+    ENTRY_DIR="entry_mobile"
+fi
+SIGNED_HAP="$OHOS_PROJECT/$ENTRY_DIR/build/default/outputs/default/$ENTRY_DIR-default-signed.hap"
 SO_FILE="$PROJECT_ROOT/target/aarch64-unknown-linux-ohos/release/libapi_lib.so"
-HVIGORFILE="$OHOS_PROJECT/entry/hvigorfile.ts"
+HVIGORFILE="$OHOS_PROJECT/$ENTRY_DIR/hvigorfile.ts"
 
 echo "=== Tauri OpenHarmony Build ==="
 echo "DEVECO_HOME=$DEVECO_HOME"
@@ -22,7 +27,7 @@ echo ""
 
 # ─── Step 0: Detect template changes and re-run `tauri ohos init` ───
 TEMPLATE_DIR="$PROJECT_ROOT/crates/tauri-cli/templates/mobile/open-harmony"
-ENTRY_ETS="$OHOS_PROJECT/entry/src/main/ets/entryability/EntryAbility.ets"
+ENTRY_ETS="$OHOS_PROJECT/$ENTRY_DIR/src/main/ets/entryability/EntryAbility.ets"
 NEED_INIT=false
 
 if [ ! -f "$ENTRY_ETS" ]; then
@@ -63,6 +68,15 @@ if [ ! -d "$PROJECT_ROOT/packages/api/dist" ] || [ ! -f "$PROJECT_ROOT/crates/ta
     (cd "$PROJECT_ROOT" && pnpm build:api)
 fi
 
+# ─── Step 2.5: 构建插件 dist-js（防止过期产物导致测试失败）───
+# plugins-workspace is at the project root level (parent of tauri repo)
+PLUGINS_DIR="$(dirname "$PROJECT_ROOT")/plugins-workspace"
+if [ -d "$PLUGINS_DIR" ]; then
+    echo ""
+    echo ">>> Step 2.5: Building plugins dist-js..."
+    (cd "$PLUGINS_DIR" && pnpm build 2>&1 | tail -3) || echo "    WARNING: plugins build failed, using existing dist-js"
+fi
+
 # ─── Step 3: 前端构建 ───
 echo ""
 echo ">>> Step 3: Building frontend (VITE_AUTOTEST=${VITE_AUTOTEST:-false})..."
@@ -89,8 +103,8 @@ echo "    Generated: $SO_FILE"
 # ─── Step 5: 拷贝 .so 到 ohos 项目 ───
 echo ""
 echo ">>> Step 5: Copying .so to ohos project..."
-mkdir -p "$OHOS_PROJECT/entry/libs/arm64-v8a"
-cp "$SO_FILE" "$OHOS_PROJECT/entry/libs/arm64-v8a/libapi_lib.so"
+mkdir -p "$OHOS_PROJECT/$ENTRY_DIR/libs/arm64-v8a"
+cp "$SO_FILE" "$OHOS_PROJECT/$ENTRY_DIR/libs/arm64-v8a/libapi_lib.so"
 
 # ─── Step 6: hvigorw 打包（自动禁用/恢复 tauriPlugin）───
 echo ""
@@ -105,7 +119,7 @@ else
 fi
 
 rm -f "$SIGNED_HAP"
-(cd "$OHOS_PROJECT" && hvigorw --no-daemon -p product=default -p module=entry@default assembleHap --analyze=normal --parallel --incremental) || HVIGOR_EXIT=$?
+(cd "$OHOS_PROJECT" && hvigorw --no-daemon -p product=default -p module=$ENTRY_DIR@default assembleHap --analyze=normal --parallel --incremental) || HVIGOR_EXIT=$?
 HVIGOR_EXIT=${HVIGOR_EXIT:-0}
 
 # 恢复 tauriPlugin

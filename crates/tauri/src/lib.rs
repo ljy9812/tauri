@@ -213,6 +213,8 @@ pub use tauri_runtime_wry::webview_version;
 #[cfg_attr(docsrs, doc(cfg(target_os = "macos")))]
 pub use runtime::ActivationPolicy;
 
+pub use tauri_runtime::PdfConfig;
+
 pub use self::utils::TitleBarStyle;
 
 use self::event::EventName;

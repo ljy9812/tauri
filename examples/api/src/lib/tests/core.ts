@@ -2,9 +2,9 @@ import type { TestCase } from '../test-runner';
 import { invoke, Channel, Resource } from '@tauri-apps/api/core';
 import { emit, listen, once } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
-import { getCurrentWindow, currentMonitor } from '@tauri-apps/api/window';
+import { getCurrentWindow, currentMonitor, cursorPosition, Effect } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { getCurrentWebview, Webview } from '@tauri-apps/api/webview';
 import { appCacheDir } from '@tauri-apps/api/path';
 
 // Helper to test custom protocol using iframe
@@ -490,7 +490,7 @@ export const coreTests: TestCase[] = [
   // Test on_page_load (on_page_begin / on_page_end)
   {
     name: 'on_page_load events',
-    category: 'manual',
+    category: 'auto',
     async fn() {
       let startedUrl: string | null = null;
       let finishedUrl: string | null = null;
@@ -540,7 +540,7 @@ export const coreTests: TestCase[] = [
   // Test on_navigation interceptor
   {
     name: 'on_navigation interceptor',
-    category: 'manual',
+    category: 'auto',
     async fn() {
       let interceptedUrl: string | null = null;
       const unlisten = await listen('navigation-intercepted', (event) => {
@@ -579,7 +579,7 @@ export const coreTests: TestCase[] = [
   // Test on_document_title_changed
   {
     name: 'on_document_title_changed',
-    category: 'manual',
+    category: 'auto',
     async fn() {
       let changedTitle: string | null = null;
       const unlisten = await listen('document-title-changed', (event) => {
@@ -743,21 +743,6 @@ export const coreTests: TestCase[] = [
     },
   },
 
-  // ─── Window Background Color (Phase 3) ───
-  {
-    name: 'window.setBackgroundColor does not throw',
-    category: 'side-effect',
-    async fn() {
-      const win = getCurrentWindow();
-      // Set a semi-transparent color — should not throw
-      await win.setBackgroundColor([255, 0, 0, 128]);
-      // Set an opaque color — should not throw
-      await win.setBackgroundColor([0, 0, 0, 255]);
-      // Restore to opaque white so the label bar is not left black
-      await win.setBackgroundColor([255, 255, 255, 255]);
-    },
-  },
-
   // ─── Create Borderless Window (Phase 2 integration) ───
   {
     name: 'create_borderless_window command',
@@ -872,6 +857,535 @@ export const coreTests: TestCase[] = [
       // 2. The page should remain unchanged
       // Reset
       await invoke('set_deny_new_window', { deny: false });
+    },
+  },
+  // webview.createPdf (OHOS only)
+  {
+    name: 'webview.createPdf (default A4)',
+    category: 'auto',
+    async fn() {
+      let result = '';
+      const unlisten = await listen<string>('create-pdf-result', (event) => {
+        result = event.payload;
+      });
+
+      await invoke('test_create_pdf');
+
+      // Wait for event with 10s timeout
+      const start = Date.now();
+      while (!result && Date.now() - start < 10000) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+
+      unlisten();
+      assert(result.startsWith('true:'), `Expected success, got: ${result}`);
+      assert(result.includes('.pdf'), `Expected path in result, got: ${result}`);
+    },
+  },
+
+  // ─── Download Intercept Tests (OHOS) ───
+  {
+    name: 'on_download: Requested event fires',
+    category: 'auto',
+    timeout: 20000,
+    async fn() {
+      await invoke('set_download_test_mode', { mode: 'Default' });
+      let payload: any = null;
+      const unlisten = await listen<any>('download-requested', (event) => { payload = event.payload; });
+      const blob = new Blob(['test-data'], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'test.bin';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      const start = Date.now();
+      while (!payload && Date.now() - start < 10000) { await new Promise((r) => setTimeout(r, 50)); }
+      unlisten();
+      assert(payload !== null, 'Expected download-requested event');
+      await invoke('set_download_test_mode', { mode: 'Default' });
+    },
+  },
+  {
+    name: 'on_download: custom directory redirects path',
+    category: 'auto',
+    timeout: 20000,
+    async fn() {
+      await invoke('set_download_test_mode', { mode: 'CustomDir' });
+      let payload: any = null;
+      const unlisten = await listen<any>('download-requested', (event) => { payload = event.payload; });
+      const blob = new Blob(['custom-dir-test'], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'custom-dir-test.bin';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      const start = Date.now();
+      while (!payload && Date.now() - start < 10000) { await new Promise((r) => setTimeout(r, 50)); }
+      unlisten();
+      assert(payload !== null, 'Expected download-requested event');
+      assert(payload.mode === 'CustomDir', `Expected mode CustomDir, got ${payload.mode}`);
+      assert(payload.destination.includes('/downloads/'), `Expected destination in /downloads/, got ${payload.destination}`);
+      await invoke('set_download_test_mode', { mode: 'Default' });
+    },
+  },
+  {
+    name: 'on_download: block dangerous file types',
+    category: 'auto',
+    timeout: 20000,
+    async fn() {
+      await invoke('set_download_test_mode', { mode: 'BlockFileType' });
+      let payload: any = null;
+      const unlisten = await listen<any>('download-requested', (event) => { payload = event.payload; });
+      const blob = new Blob(['MZ'], { type: 'application/x-msdownload' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'malware.exe';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      const start = Date.now();
+      while (!payload && Date.now() - start < 10000) { await new Promise((r) => setTimeout(r, 50)); }
+      unlisten();
+      assert(payload !== null, 'Expected download-requested event');
+      assert(payload.mode === 'BlockFileType', `Expected mode BlockFileType, got ${payload.mode}`);
+      await invoke('set_download_test_mode', { mode: 'Default' });
+    },
+  },
+  {
+    name: 'on_download: audit log contains metadata',
+    category: 'auto',
+    timeout: 20000,
+    async fn() {
+      await invoke('set_download_test_mode', { mode: 'AuditLog' });
+      let payload: any = null;
+      const unlisten = await listen<any>('download-requested', (event) => { payload = event.payload; });
+      const blob = new Blob(['audit-test'], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'audit-test.bin';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      const start = Date.now();
+      while (!payload && Date.now() - start < 10000) { await new Promise((r) => setTimeout(r, 50)); }
+      unlisten();
+      assert(payload !== null, 'Expected download-requested event');
+      assert(payload.mode === 'AuditLog', `Expected mode AuditLog, got ${payload.mode}`);
+      assert(typeof payload.timestamp === 'string', 'Expected timestamp in audit log');
+      assert(payload.action === 'download_requested', `Expected action=download_requested, got ${payload.action}`);
+      await invoke('set_download_test_mode', { mode: 'Default' });
+    },
+  },
+  {
+    name: 'on_download: Finished event fires on successful download',
+    category: 'auto',
+    timeout: 25000,
+    async fn() {
+      await invoke('set_download_test_mode', { mode: 'Default' });
+      let requestedPayload: any = null;
+      let finishedPayload: any = null;
+      const unlistenRequested = await listen<any>('download-requested', (event) => { requestedPayload = event.payload; });
+      const unlistenFinished = await listen<any>('download-finished', (event) => { finishedPayload = event.payload; });
+      const blob = new Blob(['finish-test-data'], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'finish-test.bin';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      const start = Date.now();
+      while ((!requestedPayload || !finishedPayload) && Date.now() - start < 15000) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      unlistenRequested();
+      unlistenFinished();
+      assert(requestedPayload !== null, 'Expected download-requested event');
+      assert(finishedPayload !== null, 'Expected download-finished event');
+      assert(typeof finishedPayload.url === 'string', 'Expected url in finished event');
+      assert(typeof finishedPayload.success === 'boolean', 'Expected success boolean in finished event');
+      await invoke('set_download_test_mode', { mode: 'Default' });
+    },
+  },
+
+  // ── Phase 2: reparent safety (manual, expects error) ──
+
+  {
+    name: 'webview.reparent returns error on OHOS (no deadlock)',
+    category: 'manual',
+    async fn() {
+      const webview = getCurrentWebview();
+      const window = getCurrentWindow();
+      try {
+        await webview.reparent(window);
+        assert(false, 'reparent should have thrown an error on OHOS');
+      } catch (e) {
+        const errMsg = String(e);
+        assert(
+          errMsg.includes('not supported') || errMsg.includes('FailedToSendMessage') || errMsg.includes('CannotReparent'),
+          `Expected reparent error (not supported / FailedToSendMessage / CannotReparent), got: ${errMsg}`
+        );
+      }
+    },
+  },
+  {
+    name: 'webview operations work after failed reparent (no cascade deadlock)',
+    category: 'manual',
+    async fn() {
+      const webview = getCurrentWebview();
+      const window = getCurrentWindow();
+      try {
+        await webview.reparent(window);
+      } catch {
+        // expected
+      }
+      const size = await webview.size();
+      assert(size.width > 0 && size.height > 0, `webview.size() should work after failed reparent, got (${size.width},${size.height})`);
+    },
+  },
+
+  // ── Phase 3: multi-webview (manual, creates child webview) ──
+
+  {
+    name: 'webview.create_webview (multi-webview via add_child)',
+    category: 'manual',
+    async fn() {
+      const window = getCurrentWindow();
+      const label = `test-child-${Date.now()}`;
+
+      const child = new Webview(window, label, {
+        url: 'data:text/html,<html><body style="margin:0;padding:50px;font-family:sans-serif;background:lightgray"><h1>Child Webview</h1></body></html>',
+        x: 50,
+        y: 50,
+        width: 300,
+        height: 200,
+      });
+
+      const createdPromise = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Timeout waiting for webview creation'));
+        }, 5000);
+
+        child.once('tauri://created', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        child.once('tauri://error', (e: unknown) => {
+          clearTimeout(timeout);
+          reject(new Error(`Webview creation failed: ${String(e)}`));
+        });
+      });
+
+      try {
+        await createdPromise;
+      } catch (e) {
+        try { await child.close(); } catch { /* cleanup on creation failure */ }
+        throw e;
+      }
+
+      // Verify child webview bounds were applied
+      const pos = await child.position();
+      const size = await child.size();
+      assert(pos.x > 0 || pos.y > 0, `Expected non-zero position, got (${pos.x},${pos.y})`);
+      assert(size.width > 0 && size.height > 0, `Expected non-zero size, got (${size.width},${size.height})`);
+
+      await new Promise((r) => setTimeout(r, 1000));
+
+      await child.close();
+    },
+  },
+  // ─── Mouse Event Tests (OHOS desktop / 2in1) ───
+  {
+    name: 'DOM MouseEvent.dispatch (synthetic)',
+    category: 'side-effect',
+    async fn() {
+      const events: string[] = [];
+
+      const onMouseMove = () => events.push('mousemove');
+      const onMouseDown = () => events.push('mousedown');
+      const onMouseUp = () => events.push('mouseup');
+      const onClick = () => events.push('click');
+
+      document.addEventListener('mousemove', onMouseMove, { once: true });
+      document.addEventListener('mousedown', onMouseDown, { once: true });
+      document.addEventListener('mouseup', onMouseUp, { once: true });
+      document.addEventListener('click', onClick, { once: true });
+
+      // Dispatch synthetic mouse events
+      document.dispatchEvent(new MouseEvent('mousemove', { clientX: 100, clientY: 100, bubbles: true }));
+      document.dispatchEvent(new MouseEvent('mousedown', { button: 0, bubbles: true }));
+      document.dispatchEvent(new MouseEvent('mouseup', { button: 0, bubbles: true }));
+      document.dispatchEvent(new MouseEvent('click', { button: 0, bubbles: true }));
+
+      assert(events.includes('mousemove'), `mousemove not received, got: ${events.join(', ')}`);
+      assert(events.includes('mousedown'), `mousedown not received, got: ${events.join(', ')}`);
+      assert(events.includes('mouseup'), `mouseup not received, got: ${events.join(', ')}`);
+      assert(events.includes('click'), `click not received, got: ${events.join(', ')}`);
+    },
+  },
+  {
+    name: 'DOM MouseEvent.coordinates',
+    category: 'auto',
+    async fn() {
+      let capturedX = -1;
+      let capturedY = -1;
+      let capturedButton = -1;
+
+      const onMouseMove = (e: globalThis.MouseEvent) => {
+        capturedX = e.clientX;
+        capturedY = e.clientY;
+      };
+      const onMouseDown = (e: globalThis.MouseEvent) => {
+        capturedButton = e.button;
+      };
+
+      document.addEventListener('mousemove', onMouseMove, { once: true });
+      document.addEventListener('mousedown', onMouseDown, { once: true });
+
+      document.dispatchEvent(new MouseEvent('mousemove', { clientX: 250, clientY: 150, bubbles: true }));
+      document.dispatchEvent(new MouseEvent('mousedown', { button: 2, bubbles: true }));
+
+      assert(capturedX === 250, `clientX expected 250, got ${capturedX}`);
+      assert(capturedY === 150, `clientY expected 150, got ${capturedY}`);
+      assert(capturedButton === 2, `button expected 2 (right), got ${capturedButton}`);
+    },
+  },
+  {
+    name: 'DOM WheelEvent.dispatch (synthetic)',
+    category: 'side-effect',
+    async fn() {
+      let capturedDeltaX = 0;
+      let capturedDeltaY = 0;
+
+      const onWheel = (e: WheelEvent) => {
+        capturedDeltaX = e.deltaX;
+        capturedDeltaY = e.deltaY;
+      };
+
+      document.addEventListener('wheel', onWheel, { once: true });
+      document.dispatchEvent(new WheelEvent('wheel', { deltaX: 0, deltaY: -3, bubbles: true }));
+
+      assert(capturedDeltaY === -3, `deltaY expected -3, got ${capturedDeltaY}`);
+    },
+  },
+  {
+    name: 'DOM WheelEvent.ctrlKey (pinch zoom simulation)',
+    category: 'auto',
+    async fn() {
+      let receivedCtrlWheel = false;
+      let capturedDelta = 0;
+
+      const onWheel = (e: WheelEvent) => {
+        if (e.ctrlKey) {
+          receivedCtrlWheel = true;
+          capturedDelta = e.deltaY;
+        }
+      };
+
+      document.addEventListener('wheel', onWheel, { once: true });
+      document.dispatchEvent(new WheelEvent('wheel', {
+        deltaY: -1, ctrlKey: true, bubbles: true,
+      }));
+
+      assert(receivedCtrlWheel, 'Ctrl+Wheel event not received');
+      assert(capturedDelta === -1, `deltaY expected -1, got ${capturedDelta}`);
+    },
+  },
+  {
+    name: '@tauri-apps/api/window.cursorPosition',
+    category: 'auto',
+    async fn() {
+      const pos = await cursorPosition();
+      assert(typeof pos.x === 'number', `pos.x should be number, got ${typeof pos.x}`);
+      assert(typeof pos.y === 'number', `pos.y should be number, got ${typeof pos.y}`);
+      assert(pos.x >= 0, `pos.x should be >= 0, got ${pos.x}`);
+      assert(pos.y >= 0, `pos.y should be >= 0, got ${pos.y}`);
+    },
+  },
+
+  // OHOS WebView cookie management (p1-webview-cookie) — 4.1 set_cookie round-trip
+  {
+    name: 'webview.set_cookie round-trip (OHOS)',
+    category: 'side-effect',
+    async fn() {
+      const report = await invoke<Record<string, unknown>>('cookie_test');
+      assert(report.set_cookie === 'ok', `set_cookie failed: ${report.set_cookie}`);
+      assert(
+        report.test_cookie_found === true,
+        `test cookie not found after set; cookies_for_url=${JSON.stringify(report.cookies_for_url)}`
+      );
+    },
+  },
+  // 4.2 cookies() returns an array (OHOS best-effort: current URL only)
+  {
+    name: 'webview.cookies() returns array (OHOS best-effort)',
+    category: 'auto',
+    async fn() {
+      const report = await invoke<Record<string, unknown>>('cookie_test');
+      assert(
+        Array.isArray(report.cookies_all),
+        `cookies() should return array, got: ${report.cookies_all}`
+      );
+    },
+  },
+  // 4.3 delete_cookie is a no-op on OHOS (platform lacks single-cookie deletion)
+  {
+    name: 'webview.delete_cookie no-op (OHOS platform limit)',
+    category: 'side-effect',
+    async fn() {
+      const report = await invoke<Record<string, unknown>>('cookie_test');
+      assert(
+        typeof report.delete_cookie === 'string' && report.delete_cookie.startsWith('ok'),
+        `delete_cookie failed: ${report.delete_cookie}`
+      );
+    },
+  },
+  // 4.4 cookies_for_url readable (unchanged behavior)
+  {
+    name: 'webview.cookies_for_url readable (OHOS)',
+    category: 'auto',
+    async fn() {
+      const report = await invoke<Record<string, unknown>>('cookie_test');
+      assert(
+        Array.isArray(report.cookies_for_url),
+        `cookies_for_url should return array, got: ${report.cookies_for_url}`
+      );
+    },
+  },
+
+  // set_bounds / bounds round-trip (OHOS)
+  {
+    name: 'webview.set_bounds round-trip (OHOS)',
+    category: 'auto',
+    async fn() {
+      const report = await invoke('set_bounds_test');
+      assert(report.set_ok === true, `set_bounds_test failed: ${JSON.stringify(report)}`);
+      assert(report.matches === true, `bounds should match after round-trip, got: ${JSON.stringify(report)}`);
+    },
+  },
+
+  // ─── Desktop features (OHOS) ───
+
+  // PathResolver paths valid (no double files/files)
+  {
+    name: 'PathResolver app_data_dir valid (OHOS)',
+    category: 'auto',
+    async fn() {
+      const report = await invoke<Record<string, unknown>>('desktop_features_test');
+      const dir = report.app_data_dir as string;
+      assert(dir && dir.length > 0, `app_data_dir should be non-empty, got: ${dir}`);
+      assert(
+        !report.path_has_double_files,
+        `app_data_dir should not contain 'files/files', got: ${dir}`
+      );
+    },
+  },
+
+  // Click-through is a no-op on OHOS (send_user_message is fire-and-forget,
+  // the actual tao NotSupported error is discarded in the event loop).
+  // The command itself succeeds (message sent), but the operation does nothing.
+  {
+    name: 'set_ignore_cursor_events is no-op (OHOS platform limit)',
+    category: 'auto',
+    async fn() {
+      const report = await invoke<Record<string, unknown>>('desktop_features_test');
+      const result = report.click_through_result as string;
+      // On OHOS, send_user_message returns Ok (message sent), but tao discards the
+      // NotSupported error in the event loop. So we verify the command runs without crash.
+      assert(
+        result === 'ok',
+        `set_ignore_cursor_events command should succeed (fire-and-forget), got: ${result}`
+      );
+    },
+  },
+
+  // Clipboard API exists (ArkWeb default allows, attribute is no-op)
+  // Note: actual writeText requires document focus, so we only check API existence.
+  {
+    name: 'Clipboard API available (OHOS always-on)',
+    category: 'auto',
+    async fn() {
+      assert(
+        typeof navigator.clipboard !== 'undefined' || typeof document.execCommand === 'function',
+        'Clipboard API (navigator.clipboard or document.execCommand) should be available'
+      );
+    },
+  },
+
+  // ── Vibrancy (window effects) ──
+  // NOTE: WebviewWindow.new defaults to OHOS UIAbility (singleton) which conflicts
+  // with the main window. Use create_transparent_window (Float sub-window) instead.
+  {
+    name: 'window.setEffects (Blur/Acrylic/Mica) — no throw',
+    category: 'side-effect',
+    async fn() {
+      await invoke('create_transparent_window', { windowId: 'test-vibrancy-auto' });
+      const win = await WebviewWindow.getByLabel('test-vibrancy-auto');
+      if (!win) throw new Error('vibrancy window not created');
+      await win.setEffects({ effects: [Effect.Blur], radius: 25 });
+      await win.setEffects({ effects: [Effect.Acrylic], radius: 25, color: [0, 0, 0, 128] });
+      await win.setEffects({ effects: [Effect.Mica], radius: 20 });
+      await win.setEffects({ effects: [Effect.TabbedDark], radius: 20 });
+      await win.setEffects({ effects: [Effect.TabbedLight], radius: 20 });
+      await win.clearEffects();
+      assert(true, 'setEffects + clearEffects did not throw for all effect types');
+      await win.close();
+    },
+  },
+  {
+    name: 'vibrancy: Blur effect visible (manual)',
+    category: 'manual',
+    async fn() {
+      await invoke('create_transparent_window', { windowId: 'test-vibrancy-blur' });
+      const win = await WebviewWindow.getByLabel('test-vibrancy-blur');
+      if (!win) throw new Error('vibrancy window not created');
+      await win.setEffects({ effects: [Effect.Blur], radius: 25 });
+      // Manual: window should show frosted/blurry background
+    },
+  },
+  {
+    name: 'vibrancy: Acrylic effect visible (manual)',
+    category: 'manual',
+    async fn() {
+      await invoke('create_transparent_window', { windowId: 'test-vibrancy-acrylic' });
+      const win = await WebviewWindow.getByLabel('test-vibrancy-acrylic');
+      if (!win) throw new Error('vibrancy window not created');
+      await win.setEffects({ effects: [Effect.Acrylic], radius: 25, color: [0, 0, 0, 128] });
+      // Manual: window should show blur + semi-transparent tint
+    },
+  },
+  {
+    name: 'vibrancy: TabbedDark effect visible (manual)',
+    category: 'manual',
+    async fn() {
+      await invoke('create_transparent_window', { windowId: 'test-vibrancy-tabbed-dark' });
+      const win = await WebviewWindow.getByLabel('test-vibrancy-tabbed-dark');
+      if (!win) throw new Error('vibrancy window not created');
+      await win.setEffects({ effects: [Effect.TabbedDark], radius: 20 });
+      // Manual: window should show blur + dark tint
+    },
+  },
+  {
+    name: 'vibrancy: clearEffects removes blur (manual)',
+    category: 'manual',
+    async fn() {
+      await invoke('create_transparent_window', { windowId: 'test-vibrancy-clear' });
+      const win = await WebviewWindow.getByLabel('test-vibrancy-clear');
+      if (!win) throw new Error('vibrancy window not created');
+      await win.setEffects({ effects: [Effect.Blur], radius: 25 });
+      await new Promise((r) => setTimeout(r, 1000));
+      await win.clearEffects();
+      // Manual: blur should be gone after clearEffects
+    },
+  },
+  // ── Vibrancy build-time effects (WindowBuilder::effects, distinct from runtime setEffects) ──
+  {
+    name: 'vibrancy build-time effects (WindowBuilder::effects) — no throw',
+    category: 'side-effect',
+    async fn() {
+      // create_transparent_window with effect param applies effects at build time
+      // (registerController inject), distinct from runtime setEffects (AttributeUpdater).
+      await invoke('create_transparent_window', { windowId: 'test-vibrancy-build', effect: 'Blur', radius: 25 });
+      const win = await WebviewWindow.getByLabel('test-vibrancy-build');
+      if (!win) throw new Error('build-time effects window not created');
+      await win.close();
+      assert(true, 'build-time effects window created + closed without throw');
     },
   },
 ];

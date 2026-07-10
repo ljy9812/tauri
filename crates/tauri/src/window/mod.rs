@@ -267,7 +267,7 @@ async fn reopen_window(app: tauri::AppHandle) {
       #[cfg(target_os = "ios")]
       requested_by_scene_identifier_set: config.requested_by_scene_identifier.is_some(),
       #[cfg(target_env = "ohos")]
-      ohos_window_kind: Some(OHOSWindowKind::UIAbility),
+      ohos_window_kind: None,
       manager,
       label: config.label.clone(),
       window_effects: config.window_effects.clone(),
@@ -451,9 +451,17 @@ tauri::Builder::default()
     let app_manager = self.manager.manager_owned();
     let window_label = window.label().to_string();
     let window_ = window.clone();
+    let effects_to_apply = self.window_effects.clone();
+    // OHOS: apply directly. set_window_blur uses TSFN (threadsafe, no main-thread Env needed),
+    // so no run_on_main_thread required (avoids run_on_main_thread + rx.recv() deadlock risk).
+    #[cfg(target_env = "ohos")]
+    if let Some(effects) = effects_to_apply.clone() {
+      let _ = crate::vibrancy::set_window_effects(&window_, Some(effects));
+    }
     // run on the main thread to fix a deadlock on webview.eval if the tracing feature is enabled
     let _ = window.run_on_main_thread(move || {
-      if let Some(effects) = self.window_effects {
+      #[cfg(not(target_env = "ohos"))]
+      if let Some(effects) = effects_to_apply {
         _ = crate::vibrancy::set_window_effects(&window_, Some(effects));
       }
       let event = crate::EventName::from_str("tauri://window-created");
@@ -2167,6 +2175,16 @@ tauri::Builder::default()
   pub fn set_effects<E: Into<Option<WindowEffectsConfig>>>(&self, effects: E) -> crate::Result<()> {
     let effects = effects.into();
     let window = self.clone();
+    // OHOS: apply directly. set_window_blur uses TSFN (threadsafe, no main-thread Env needed),
+    // so no run_on_main_thread required (avoids the run_on_main_thread + rx.recv() deadlock risk
+    // per ohos-constraints.md). ohos_window_id() uses send_user_message + recv, safe from any
+    // thread (main thread event loop handles OhosWindowId; not a run_on_main_thread closure).
+    #[cfg(target_env = "ohos")]
+    {
+      let _ = crate::vibrancy::set_window_effects(&window, effects);
+      return Ok(());
+    }
+    #[cfg(not(target_env = "ohos"))]
     self.run_on_main_thread(move || {
       let _ = crate::vibrancy::set_window_effects(&window, effects);
     })

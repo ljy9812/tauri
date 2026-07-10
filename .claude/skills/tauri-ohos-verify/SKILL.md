@@ -73,9 +73,10 @@ PACKAGE=muda OHOS_DEVICE_TYPE=desktop bash .claude/skills/ohos-rust-ut/scripts/r
 使用 [ohos-build Skill](../ohos-build/SKILL.md) 进行一键构建部署：
 
 ```bash
-source .claude/skills/ohos-build/scripts/env.sh
-bash .claude/skills/ohos-build/scripts/run-tests.sh "" desktop
+OHOS_DEVICE_TYPE=desktop bash .claude/skills/ohos-build/scripts/run-tests.sh "" desktop
 ```
+
+**注意**：必须先设置 `OHOS_DEVICE_TYPE` 环境变量。不要先 `source env.sh`，否则会默认设为 `desktop`，可能覆盖你传入的参数。
 
 详细的环境配置、设备日志、HAR 重建、排错指南见 ohos-build Skill。
 

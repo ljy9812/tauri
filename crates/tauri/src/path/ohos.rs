@@ -20,7 +20,16 @@ impl<R: Runtime> PathResolver<R> {
     crate::ohos::BASE_PATH
       .get()
       .and_then(|p| p.as_ref())
-      .map(PathBuf::from)
+      .map(|p| {
+        let path = PathBuf::from(p);
+        // context.filesDir ends with "/files", but we need the el2 base root
+        // to avoid double-joining "files" in path methods (e.g., "files/files").
+        if path.ends_with("files") {
+          path.parent().unwrap_or(&path).to_path_buf()
+        } else {
+          path
+        }
+      })
       .ok_or(Error::UnknownPath)
   }
 

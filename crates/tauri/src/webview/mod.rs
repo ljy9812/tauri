@@ -265,10 +265,24 @@ pub enum NewWindowResponse<R: Runtime> {
   Deny,
 }
 
+/// Response for the new window request handler.
+///
+/// On OHOS, `Create` creates a real OS sub-window via `WindowManager.createSubWindow`
+/// (not a webview injection like desktop). The `window` field carries the
+/// `WebviewWindow` created by the handler, but OHOS cannot inject it into the
+/// ArkWeb new-window pipeline — `setWebController(null)` is called instead.
 #[cfg(target_env = "ohos")]
 pub enum NewWindowResponse<R: Runtime> {
   /// Allow the window to be opened with the default implementation.
   Allow(std::marker::PhantomData<R>),
+  /// Allow the window to be opened, with the given window.
+  ///
+  /// On OHOS, this creates a real OS sub-window via `WindowManager.createSubWindow`,
+  /// distinct from `Allow` which opens an in-page dialog.
+  Create {
+    /// Window that was created.
+    window: crate::WebviewWindow<R>,
+  },
   /// Deny the window from being opened.
   Deny,
 }
@@ -731,6 +745,12 @@ tauri::Builder::default()
             tauri_runtime::webview::NewWindowResponse::Allow
           }
           #[cfg(all(desktop, not(target_env = "ohos")))]
+          NewWindowResponse::Create { window } => {
+            tauri_runtime::webview::NewWindowResponse::Create {
+              window_id: window.window.window.id,
+            }
+          }
+          #[cfg(target_env = "ohos")]
           NewWindowResponse::Create { window } => {
             tauri_runtime::webview::NewWindowResponse::Create {
               window_id: window.window.window.id,
@@ -2145,6 +2165,32 @@ tauri::Builder::default()
       .webview
       .dispatcher
       .clear_all_browsing_data()
+      .map_err(Into::into)
+  }
+
+  /// Create a PDF from the current webview content and save to the given path.
+  ///
+  /// The callback receives `true` on success, `false` on failure.
+  ///
+  /// Only available on OpenHarmony.
+  #[cfg(target_env = "ohos")]
+  #[cfg_attr(docsrs, doc(cfg(target_env = "ohos")))]
+  pub fn create_pdf(
+    &self,
+    path: impl AsRef<std::path::Path>,
+    config: Option<tauri_runtime::PdfConfig>,
+    callback: impl Fn(bool) + Send + 'static,
+  ) -> crate::Result<()> {
+    let path_str = path.as_ref().to_str().ok_or_else(|| {
+      std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "create_pdf path must be valid UTF-8",
+      )
+    })?;
+    self
+      .webview
+      .dispatcher
+      .create_pdf(path_str.to_string(), config, Box::new(callback))
       .map_err(Into::into)
   }
 

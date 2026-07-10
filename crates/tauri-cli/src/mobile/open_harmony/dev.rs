@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 use super::{
-  delete_codegen_vars, device_prompt, ensure_init, env, get_app, get_config, inject_resources,
-  open_and_wait, plugins, MobileTarget,
+  active_entry_module, delete_codegen_vars, device_prompt, ensure_init, env, get_app, get_config,
+  inject_resources, open_and_wait, plugins, MobileTarget,
 };
 use crate::{
   dev::Options as DevOptions,
@@ -320,6 +320,14 @@ fn run_dev(
       let _handle = write_options(tauri_config, cli_options)?;
 
       inject_resources(config, tauri_config)?;
+      super::inject_icons(config, tauri_config, dirs.tauri)?;
+
+      // Activate only the entry module for the current device form so hvigor
+      // builds a single HAP (`entry_{form}-default-*.hap`). Preserves shared
+      // non-entry modules (`tauri`, `dialog`, ...).
+      let active_entry = active_entry_module();
+      plugins::write_build_profile_modules(&config.project_dir(), &[&active_entry])
+        .context("failed to select active entry module")?;
 
       if !plugin_metadata.is_empty() {
         let project_dir = config.project_dir();

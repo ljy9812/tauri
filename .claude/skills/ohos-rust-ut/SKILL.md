@@ -13,16 +13,16 @@ OpenHarmony 设备分为多种类型，通过 `OHOS_DEVICE_TYPE` 环境变量控
 
 | 值 | 说明 | 编译特性 |
 |---|------|---------|
-| `mobile` | 手机/平板（默认） | `cfg(mobile)` 生效 |
-| `desktop` | PC/桌面设备 | `cfg(desktop)` 生效 |
+| `mobile` | 手机/平板 | `cfg(mobile)` 生效 |
+| `desktop` | PC/桌面设备（默认） | `cfg(desktop)` 生效 |
 
 设置方式：
 ```bash
-# mobile 模式（默认）
-export OHOS_DEVICE_TYPE=mobile
-
-# desktop 模式
+# desktop 模式（默认）
 export OHOS_DEVICE_TYPE=desktop
+
+# mobile 模式
+export OHOS_DEVICE_TYPE=mobile
 ```
 
 ## 环境要求
@@ -38,7 +38,7 @@ export OHOS_DEVICE_TYPE=desktop
 ## 一键运行
 
 ```bash
-# 跑 tauri crate 的所有测试（默认 mobile 模式）
+# 跑 tauri crate 的所有测试（默认 desktop 模式）
 bash D:/workspace/tauri/tauri/.claude/skills/ohos-rust-ut/scripts/run-ut.sh
 
 # 跑 openharmony-ability crate 的所有测试（含 menu feature）
@@ -173,7 +173,7 @@ mod tests {
 | `FEATURES` | `""` | 启用的 features (e.g. "menu,webview") |
 | `DEVICE_SN` | 空（自动） | 设备 SN，多设备时指定 |
 | `DEVICE_DIR` | `/data/local/tmp` | 设备上二进制临时目录 |
-| `OHOS_DEVICE_TYPE` | `mobile` | 设备类型：`mobile` 或 `desktop` |
+| `OHOS_DEVICE_TYPE` | `desktop` | 设备类型：`mobile` 或 `desktop` |
 
 ### 自动检测逻辑
 

@@ -14,7 +14,7 @@
   let qoTitle = $state('Tauri API')
   let qoHeight = $state(300)
   let qoAbilityName = $state('TestTrayAbility')
-  let qoModuleName = $state('entry')
+  let qoModuleName = $state('entry_desktop')
   let testTray = $state(null)
 
   // Tauri 32x32 default icon
@@ -84,6 +84,8 @@
         PredefinedMenuItem.new({ item: 'CloseWindow' }),
         PredefinedMenuItem.new({ item: 'Separator' }),
         PredefinedMenuItem.new({ item: 'Hide' }),
+        PredefinedMenuItem.new({ item: 'ShowAll' }),
+        PredefinedMenuItem.new({ item: 'BringAllToFront' }),
         PredefinedMenuItem.new({ item: 'Quit' }),
       ])
 

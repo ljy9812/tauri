@@ -4,7 +4,7 @@
 
 //! A layer between raw [`Runtime`] webviews and Tauri.
 //!
-#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::window::WindowId;
 use crate::{window::is_label_valid, Rect, Runtime, UserEvent};
 
@@ -171,7 +171,7 @@ pub enum NewWindowResponse {
   ///
   /// **Linux**: The webview must be related to the caller webview. See [`WebviewAttributes::related_view`].
   /// **Windows**: The webview must use the same environment as the caller webview. See [`WebviewAttributes::environment`].
-  #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+  #[cfg(not(any(target_os = "android", target_os = "ios")))]
   Create { window_id: WindowId },
   /// Deny the window from being opened.
   Deny,

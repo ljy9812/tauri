@@ -94,17 +94,26 @@ pub fn clear_tracked_events<R: Runtime>(app: tauri::AppHandle<R>) -> tauri::Resu
 #[derive(Default)]
 pub struct NewWindowDenyState {
   pub deny: std::sync::atomic::AtomicBool,
+  pub create: std::sync::atomic::AtomicBool,
   pub last_url: Mutex<Option<String>>,
 }
 
 #[command]
-pub fn set_deny_new_window<R: Runtime>(
-  app: tauri::AppHandle<R>,
-  deny: bool,
-) -> tauri::Result<()> {
+pub fn set_deny_new_window<R: Runtime>(app: tauri::AppHandle<R>, deny: bool) -> tauri::Result<()> {
   let state = app.state::<NewWindowDenyState>();
   state.deny.store(deny, Ordering::SeqCst);
   log::info!("[set_deny_new_window] deny={}", deny);
+  Ok(())
+}
+
+#[command]
+pub fn set_create_new_window<R: Runtime>(
+  app: tauri::AppHandle<R>,
+  create: bool,
+) -> tauri::Result<()> {
+  let state = app.state::<NewWindowDenyState>();
+  state.create.store(create, Ordering::SeqCst);
+  log::debug!("[set_create_new_window] create={}", create);
   Ok(())
 }
 
@@ -553,7 +562,11 @@ pub fn create_window_with_custom_ua<R: tauri::Runtime>(
   // Use unique label to avoid conflict when called multiple times
   let counter = UA_WINDOW_COUNTER.fetch_add(1, Ordering::Relaxed);
   let unique_id = format!("{}-{}", window_id, counter);
-  log::info!("Creating window '{}' with custom User-Agent: '{}'", unique_id, user_agent);
+  log::info!(
+    "Creating window '{}' with custom User-Agent: '{}'",
+    unique_id,
+    user_agent
+  );
 
   let title = if user_agent.is_empty() {
     "UA Test: Default".to_string()
@@ -576,9 +589,10 @@ pub fn create_window_with_custom_ua<R: tauri::Runtime>(
     format!("/useragent-test.html?expected={}", encoded)
   };
 
-  let mut builder = tauri::WebviewWindowBuilder::new(&app, &unique_id, tauri::WebviewUrl::App(url_path.into()))
-    .title(title)
-    .inner_size(800.0, 600.0);
+  let mut builder =
+    tauri::WebviewWindowBuilder::new(&app, &unique_id, tauri::WebviewUrl::App(url_path.into()))
+      .title(title)
+      .inner_size(800.0, 600.0);
 
   if !user_agent.is_empty() {
     builder = builder.user_agent(&user_agent);
@@ -591,7 +605,10 @@ pub fn create_window_with_custom_ua<R: tauri::Runtime>(
   let wid = unique_id.clone();
   window.eval_with_callback("navigator.userAgent", move |ua| {
     log::info!("[UA-TEST] Window '{}': navigator.userAgent = {}", wid, ua);
-    let _ = app_handle.emit("ua-test-result", serde_json::json!({ "windowId": wid, "userAgent": ua }));
+    let _ = app_handle.emit(
+      "ua-test-result",
+      serde_json::json!({ "windowId": wid, "userAgent": ua }),
+    );
   })?;
 
   Ok(())
@@ -670,12 +687,16 @@ const STATUS_SCRIPT: &str = r##"
 pub fn create_transparent_window<R: tauri::Runtime>(
   app: tauri::AppHandle<R>,
   window_id: String,
+  effect: Option<String>,
+  radius: Option<f64>,
+  color: Option<[u8; 4]>,
 ) -> tauri::Result<()> {
-  log::info!("Creating transparent window: {}", window_id);
+  log::info!("Creating transparent window: {} (effect={:?}, radius={:?})", window_id, effect, radius);
 
   let close_link = CLOSE_LINK_HTML;
   let status_script = STATUS_SCRIPT;
-  let init_script = format!(r#"
+  let init_script = format!(
+    r#"
     document.addEventListener('DOMContentLoaded', function() {{
       document.documentElement.style.background = 'transparent';
       document.body.style.cssText = 'background:transparent;margin:0;padding:0;'
@@ -692,14 +713,39 @@ pub fn create_transparent_window<R: tauri::Runtime>(
       document.body.appendChild(div);
       {status_script}
     }});
-  "#);
+  "#
+  );
 
-  let _window = tauri::WebviewWindowBuilder::new(&app, &window_id, WebviewUrl::App("hello.html".into()))
+  let mut builder = tauri::WebviewWindowBuilder::new(&app, &window_id, WebviewUrl::App("hello.html".into()))
     .title("Transparent Window")
     .transparent(true)
     .inner_size(600.0, 400.0)
-    .initialization_script(&init_script)
-    .build()?;
+    .initialization_script(&init_script);
+
+  // Optional build-time effects (WindowBuilder::effects path — applied at window creation via
+  // registerController inject, distinct from runtime setEffects which uses AttributeUpdater).
+  if let Some(effect_name) = &effect {
+    let effect = match effect_name.as_str() {
+      "Blur" => tauri::window::Effect::Blur,
+      "Acrylic" => tauri::window::Effect::Acrylic,
+      "Mica" => tauri::window::Effect::Mica,
+      "MicaDark" => tauri::window::Effect::MicaDark,
+      "MicaLight" => tauri::window::Effect::MicaLight,
+      "Tabbed" => tauri::window::Effect::Tabbed,
+      "TabbedDark" => tauri::window::Effect::TabbedDark,
+      "TabbedLight" => tauri::window::Effect::TabbedLight,
+      other => return Err(tauri::Error::Anyhow(anyhow::anyhow!("unknown effect: {}", other))),
+    };
+    let effects = tauri::utils::config::WindowEffectsConfig {
+      effects: vec![effect],
+      radius,
+      state: None,
+      color: color.map(|c| tauri::utils::config::Color(c[0], c[1], c[2], c[3])),
+    };
+    builder = builder.effects(effects);
+  }
+
+  let _window = builder.build()?;
 
   Ok(())
 }
@@ -717,7 +763,8 @@ pub fn create_borderless_window<R: tauri::Runtime>(
 
   let close_link = CLOSE_LINK_HTML;
   let status_script = STATUS_SCRIPT;
-  let init_script = format!(r#"
+  let init_script = format!(
+    r#"
     document.addEventListener('DOMContentLoaded', function() {{
       document.documentElement.style.background = '#1a1a2e';
       document.body.style.cssText = 'background:#1a1a2e;margin:0;padding:0;'
@@ -733,13 +780,15 @@ pub fn create_borderless_window<R: tauri::Runtime>(
       document.body.appendChild(div);
       {status_script}
     }});
-  "#);
+  "#
+  );
 
-  let builder = tauri::WebviewWindowBuilder::new(&app, &window_id, WebviewUrl::App("hello.html".into()))
-    .title("Borderless Window")
-    .decorations(false)
-    .inner_size(500.0, 350.0)
-    .initialization_script(&init_script);
+  let builder =
+    tauri::WebviewWindowBuilder::new(&app, &window_id, WebviewUrl::App("hello.html".into()))
+      .title("Borderless Window")
+      .decorations(false)
+      .inner_size(500.0, 350.0)
+      .initialization_script(&init_script);
 
   let _window = builder.build()?;
 
@@ -758,7 +807,8 @@ pub fn create_transparent_borderless_window<R: tauri::Runtime>(
 
   let close_link = CLOSE_LINK_HTML;
   let status_script = STATUS_SCRIPT;
-  let init_script = format!(r#"
+  let init_script = format!(
+    r#"
     document.addEventListener('DOMContentLoaded', function() {{
       document.documentElement.style.background = 'transparent';
       document.body.style.cssText = 'background:transparent;margin:0;padding:0;'
@@ -776,14 +826,16 @@ pub fn create_transparent_borderless_window<R: tauri::Runtime>(
       document.body.appendChild(div);
       {status_script}
     }});
-  "#);
+  "#
+  );
 
-  let builder = tauri::WebviewWindowBuilder::new(&app, &window_id, WebviewUrl::App("hello.html".into()))
-    .title("Transparent Borderless")
-    .transparent(true)
-    .decorations(false)
-    .inner_size(500.0, 350.0)
-    .initialization_script(&init_script);
+  let builder =
+    tauri::WebviewWindowBuilder::new(&app, &window_id, WebviewUrl::App("hello.html".into()))
+      .title("Transparent Borderless")
+      .transparent(true)
+      .decorations(false)
+      .inner_size(500.0, 350.0)
+      .initialization_script(&init_script);
 
   let _window = builder.build()?;
 
@@ -840,46 +892,61 @@ pub fn test_web_page_snapshot<R: Runtime>(app: tauri::AppHandle<R>) -> tauri::Re
       webview_window.with_webview(move |platform_webview| {
         let handle = platform_webview.inner();
         let app_cb = app_emit.clone();
-        if let Err(e) = handle.web_page_snapshot(move |result| {
-          match result {
-            Ok(data) => {
-              log::info!("web_page_snapshot success: {}x{}, rgba len={}", data.width, data.height, data.rgba.len());
-              if let Err(e) = app_cb.emit("web-page-snapshot-result", serde_json::json!({
+        if let Err(e) = handle.web_page_snapshot(move |result| match result {
+          Ok(data) => {
+            log::info!(
+              "web_page_snapshot success: {}x{}, rgba len={}",
+              data.width,
+              data.height,
+              data.rgba.len()
+            );
+            if let Err(e) = app_cb.emit(
+              "web-page-snapshot-result",
+              serde_json::json!({
                 "success": true,
                 "width": data.width,
                 "height": data.height,
                 "rgba_len": data.rgba.len(),
                 "rgba": data.rgba,
-              })) {
-                log::error!("Failed to emit snapshot result: {}", e);
-              }
+              }),
+            ) {
+              log::error!("Failed to emit snapshot result: {}", e);
             }
-            Err(e) => {
-              log::error!("web_page_snapshot failed: {}", e);
-              if let Err(emit_err) = app_cb.emit("web-page-snapshot-result", serde_json::json!({
+          }
+          Err(e) => {
+            log::error!("web_page_snapshot failed: {}", e);
+            if let Err(emit_err) = app_cb.emit(
+              "web-page-snapshot-result",
+              serde_json::json!({
                 "success": false,
                 "error": e,
-              })) {
-                log::error!("Failed to emit snapshot error: {}", emit_err);
-              }
+              }),
+            ) {
+              log::error!("Failed to emit snapshot error: {}", emit_err);
             }
           }
         }) {
           log::error!("web_page_snapshot setup failed: {}", e);
-          if let Err(emit_err) = app_emit.emit("web-page-snapshot-result", serde_json::json!({
-            "success": false,
-            "error": format!("setup failed: {}", e),
-          })) {
+          if let Err(emit_err) = app_emit.emit(
+            "web-page-snapshot-result",
+            serde_json::json!({
+              "success": false,
+              "error": format!("setup failed: {}", e),
+            }),
+          ) {
             log::error!("Failed to emit setup error: {}", emit_err);
           }
         }
       })?;
     } else {
       log::error!("test_web_page_snapshot: 'main' webview window not found");
-      if let Err(e) = app.emit("web-page-snapshot-result", serde_json::json!({
-        "success": false,
-        "error": "main webview window not found",
-      })) {
+      if let Err(e) = app.emit(
+        "web-page-snapshot-result",
+        serde_json::json!({
+          "success": false,
+          "error": "main webview window not found",
+        }),
+      ) {
         log::error!("Failed to emit window not found error: {}", e);
       }
     }
@@ -887,13 +954,314 @@ pub fn test_web_page_snapshot<R: Runtime>(app: tauri::AppHandle<R>) -> tauri::Re
 
   #[cfg(not(target_env = "ohos"))]
   {
-    if let Err(e) = app.emit("web-page-snapshot-result", serde_json::json!({
-      "success": false,
-      "error": "web_page_snapshot only available on OHOS",
-    })) {
+    if let Err(e) = app.emit(
+      "web-page-snapshot-result",
+      serde_json::json!({
+        "success": false,
+        "error": "web_page_snapshot only available on OHOS",
+      }),
+    ) {
       log::error!("Failed to emit non-OHOS error: {}", e);
     }
   }
 
   Ok(())
+}
+
+/// Test command for webview.create_pdf (OHOS only)
+#[command]
+pub fn test_create_pdf<R: Runtime>(
+  app: tauri::AppHandle<R>,
+  path: Option<String>,
+  config: Option<tauri::PdfConfig>,
+) -> tauri::Result<()> {
+  let path = path.unwrap_or_else(|| "/data/storage/el2/base/cache/test.pdf".to_string());
+  log::info!("test_create_pdf called, path={}", path);
+
+  #[cfg(target_env = "ohos")]
+  {
+    if let Some(window) = app.get_webview_window("main") {
+      let app_clone = app.clone();
+
+      let path_for_cb = path.clone();
+      window.create_pdf(&path, config, move |success| {
+        log::info!(
+          "create_pdf callback: success={}, path={}",
+          success,
+          path_for_cb
+        );
+        let _ = app_clone.emit("create-pdf-result", format!("{}:{}", success, path_for_cb));
+      })?;
+    } else {
+      let _ = app.emit("create-pdf-result", "false:window not found");
+    }
+  }
+
+  #[cfg(not(target_env = "ohos"))]
+  {
+    let _ = (config);
+    let _ = app.emit(
+      "create-pdf-result",
+      "false:createPdf only supported on OHOS",
+    );
+  }
+
+  Ok(())
+}
+
+/// Sentry: trigger a Rust panic to test sentry panic capture
+#[cfg(debug_assertions)]
+#[command]
+pub fn sentry_test_panic() {
+  panic!("sentry test panic from examples/api");
+}
+
+/// Sentry: add a breadcrumb from Rust to test breadcrumb sync
+#[command]
+pub fn sentry_test_breadcrumb() {
+  sentry::add_breadcrumb(sentry::Breadcrumb {
+    message: Some("test breadcrumb from examples/api".to_owned()),
+    category: Some("test".to_owned()),
+    level: sentry::Level::Info,
+    ..Default::default()
+  });
+  log::info!("[sentry] breadcrumb added from Rust");
+}
+
+// ─── Download Test Mode ───
+// Controls the behavior of the on_download handler for manual testing scenarios.
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub enum DownloadTestMode {
+  Default,
+  CustomDir,
+  ConfirmAllow,
+  BlockFileType,
+  ProgressTracking,
+  AuditLog,
+  AutoRename,
+  CancelAll,
+}
+
+impl Default for DownloadTestMode {
+  fn default() -> Self {
+    DownloadTestMode::Default
+  }
+}
+
+pub struct DownloadTestState {
+  pub mode: Mutex<DownloadTestMode>,
+}
+
+impl DownloadTestState {
+  pub fn new() -> Self {
+    Self {
+      mode: Mutex::new(DownloadTestMode::Default),
+    }
+  }
+}
+
+#[command]
+pub fn set_download_test_mode<R: Runtime>(
+  app: tauri::AppHandle<R>,
+  mode: DownloadTestMode,
+) -> tauri::Result<()> {
+  let state = app.state::<DownloadTestState>();
+  let mut current = state.mode.lock().unwrap();
+  log::info!("[DownloadTest] Mode set to: {:?}", mode);
+  *current = mode;
+  Ok(())
+}
+
+/// Exercise the webview cookie APIs (set / get-for-url / get-all / delete)
+/// to verify OHOS cookie management end-to-end. Returns a JSON report.
+///
+/// Covers Phase 1 (p1-webview-cookie) device verification scenarios:
+/// - set_cookie round-trip via `WebCookieManager.configCookieSync`
+/// - cookies_for_url reads the cookie back
+/// - cookies() best-effort (current URL on OHOS)
+/// - delete_cookie no-op (platform lacks single-cookie deletion)
+#[command]
+pub fn cookie_test<R: tauri::Runtime>(
+  window: tauri::WebviewWindow<R>,
+) -> tauri::Result<serde_json::Value> {
+  use tauri::webview::Cookie;
+
+  let cookie = Cookie::build(("tauri_test_cookie", "value123"))
+    .domain("example.com")
+    .path("/")
+    .build();
+
+  let mut report = serde_json::json!({
+    "set_cookie": null,
+    "cookies_for_url": null,
+    "test_cookie_found": false,
+    "cookies_all": null,
+    "delete_cookie": null,
+  });
+
+  // 1. set_cookie
+  match window.set_cookie(cookie.clone()) {
+    Ok(_) => report["set_cookie"] = serde_json::json!("ok"),
+    Err(e) => report["set_cookie"] = serde_json::json!(format!("error: {}", e)),
+  }
+
+  // 2. cookies_for_url — verify the cookie we just set is readable
+  match url::Url::parse("https://example.com") {
+    Ok(url) => match window.cookies_for_url(url) {
+      Ok(cookies) => {
+        let found = cookies.iter().any(|c| c.name() == "tauri_test_cookie");
+        report["test_cookie_found"] = serde_json::json!(found);
+        report["cookies_for_url"] = serde_json::json!(cookies
+          .iter()
+          .map(|c| format!("{}={}", c.name(), c.value()))
+          .collect::<Vec<_>>());
+      }
+      Err(e) => report["cookies_for_url"] = serde_json::json!(format!("error: {}", e)),
+    },
+    Err(e) => report["cookies_for_url"] = serde_json::json!(format!("url parse error: {}", e)),
+  }
+
+  // 3. cookies() — on OHOS returns cookies for the current URL (best-effort)
+  match window.cookies() {
+    Ok(cookies) => {
+      report["cookies_all"] = serde_json::json!(cookies
+        .iter()
+        .map(|c| format!("{}={}", c.name(), c.value()))
+        .collect::<Vec<_>>())
+    }
+    Err(e) => report["cookies_all"] = serde_json::json!(format!("error: {}", e)),
+  }
+
+  // 4. delete_cookie — no-op on OHOS (platform lacks single-cookie deletion)
+  match window.delete_cookie(cookie) {
+    Ok(_) => report["delete_cookie"] = serde_json::json!("ok (no-op on OHOS, see log warning)"),
+    Err(e) => report["delete_cookie"] = serde_json::json!(format!("error: {}", e)),
+  }
+
+  log::info!("[cookie_test] report: {}", report);
+  Ok(report)
+}
+
+/// Manual test: set a cookie for httpbin.org on the main webview cookie store
+/// and open a child window to https://httpbin.org/cookies so the user can
+/// visually verify the cookie is sent to the server and persists on reload.
+#[command]
+pub fn cookie_manual_test<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
+  use tauri::webview::Cookie;
+
+  let main = app
+    .get_webview_window("main")
+    .ok_or_else(|| "main window not found".to_string())?;
+
+  let cookie = Cookie::build(("tauri_test_cookie", "ManualTest123"))
+    .domain("httpbin.org")
+    .path("/")
+    .build();
+  main.set_cookie(cookie).map_err(|e| e.to_string())?;
+
+  let url = "https://httpbin.org/cookies"
+    .parse()
+    .map_err(|e| format!("invalid url: {}", e))?;
+  tauri::WebviewWindowBuilder::new(&app, "cookie-manual-test", tauri::WebviewUrl::External(url))
+    .title("Cookie Manual Test")
+    .inner_size(480.0, 640.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+  Ok(())
+}
+
+/// Test OHOS WebView DevTools (open/close/is_devtools_open). Only compiled when
+/// the `devtools` feature (or debug_assertions) is enabled; dormant otherwise.
+#[cfg(any(debug_assertions, feature = "devtools"))]
+#[command]
+pub fn devtools_test<R: tauri::Runtime>(
+  window: tauri::WebviewWindow<R>,
+) -> tauri::Result<serde_json::Value> {
+  let initial = window.is_devtools_open();
+  window.open_devtools();
+  let after_open = window.is_devtools_open();
+  window.close_devtools();
+  let after_close = window.is_devtools_open();
+  Ok(serde_json::json!({
+    "enabled": true,
+    "initial": initial,
+    "after_open": after_open,
+    "after_close": after_close,
+  }))
+}
+
+/// Desktop features test: checks PathResolver paths, click-through, clipboard.
+#[cfg(target_env = "ohos")]
+#[command]
+pub fn desktop_features_test<R: Runtime>(
+  app: tauri::AppHandle<R>,
+  window: tauri::WebviewWindow<R>,
+) -> Result<serde_json::Value, String> {
+  // Check PathResolver paths
+  let app_data_dir = app
+    .path()
+    .app_data_dir()
+    .map(|p| p.to_string_lossy().to_string())
+    .unwrap_or_else(|_| "(error)".to_string());
+  let path_has_double_files = app_data_dir.contains("files/files");
+
+  // Check click-through returns NotSupported
+  let click_through_result = window
+    .set_ignore_cursor_events(true)
+    .map(|_| "ok".to_string())
+    .unwrap_or_else(|e| format!("err: {}", e));
+
+  // Reset click-through
+  let _ = window.set_ignore_cursor_events(false);
+
+  Ok(serde_json::json!({
+    "app_data_dir": app_data_dir,
+    "path_has_double_files": path_has_double_files,
+    "click_through_result": click_through_result,
+  }))
+}
+
+/// Only call open_devtools() without close. Opens the debugging session.
+#[cfg(any(debug_assertions, feature = "devtools"))]
+#[command]
+pub fn devtools_open_only<R: tauri::Runtime>(
+  window: tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+  window.open_devtools();
+  Ok(())
+}
+
+/// Only call close_devtools() without open. Closes the debugging session,
+/// destroying the domain socket and disconnecting Chrome DevTools.
+#[cfg(any(debug_assertions, feature = "devtools"))]
+#[command]
+pub fn devtools_close_only<R: tauri::Runtime>(
+  window: tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+  window.close_devtools();
+  Ok(())
+}
+/// Test set_bounds / bounds round-trip for the main webview. Verifies that
+/// set_bounds calls ArkTS setBounds without error and bounds() returns
+/// consistent values after the round-trip.
+#[command]
+pub fn set_bounds_test<R: tauri::Runtime>(
+  window: tauri::WebviewWindow<R>,
+) -> tauri::Result<serde_json::Value> {
+  use tauri::webview::Webview;
+  let webview = window.as_ref();
+  let original = webview.bounds()?;
+  // Round-trip: set_bounds with original → should not error
+  webview.set_bounds(original)?;
+  let after_set = webview.bounds()?;
+  let original_str = format!("{:?}", original);
+  let after_set_str = format!("{:?}", after_set);
+  Ok(serde_json::json!({
+    "set_ok": true,
+    "original": original_str,
+    "after_set": after_set_str,
+    "matches": original_str == after_set_str,
+  }))
 }

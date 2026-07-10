@@ -196,7 +196,17 @@ pub struct WindowIdStore(Arc<Mutex<HashMap<TaoWindowId, WindowId>>>);
 
 impl WindowIdStore {
   pub fn insert(&self, w: TaoWindowId, id: WindowId) {
+    // On OHOS, WindowId is a ZST - all windows share the same key.
+    // Use or_insert to keep the first (main) window mapping and prevent
+    // child window creation from overwriting it.
+    #[cfg(target_env = "ohos")]
+    {
+      self.0.lock().unwrap().entry(w).or_insert(id);
+    }
+    #[cfg(not(target_env = "ohos"))]
+    {
     self.0.lock().unwrap().insert(w, id);
+  }
   }
 
   pub fn get(&self, w: &TaoWindowId) -> Option<WindowId> {
@@ -328,19 +338,41 @@ impl<T: UserEvent> Context<T> {
       })
       .unwrap_or((None, false));
 
+    #[cfg(target_env = "ohos")]
+    let ohos_window_id = Arc::new(std::sync::Mutex::new(None::<i64>));
+    #[cfg(target_env = "ohos")]
+    let ohos_window_id_clone = ohos_window_id.clone();
+
     send_user_message(
       self,
       Message::CreateWindow(
         window_id,
         Box::new(move |event_loop| {
-          create_window(
+          log::debug!("[WRY] CreateWindow callback: start");
+          let window = create_window(
             window_id,
             webview_id.unwrap_or_default(),
             event_loop,
             &context,
             pending,
             after_window_creation,
-          )
+          )?;
+          #[cfg(target_env = "ohos")]
+          {
+            log::info!(
+              "[WRY] CreateWindow callback: inner={}",
+              window.inner.is_some()
+            );
+            if let Some(ref inner) = window.inner {
+              use tao::window::WindowExtOhos;
+              let id = inner.ohos_window_id();
+              log::debug!("[WRY] CreateWindow callback: ohos_window_id={:?}", id);
+              if let Some(id) = id {
+                *ohos_window_id_clone.lock().unwrap() = Some(id);
+              }
+            }
+          }
+          Ok(window)
         }),
       ),
     )?;
@@ -348,6 +380,8 @@ impl<T: UserEvent> Context<T> {
     let dispatcher = WryWindowDispatcher {
       window_id,
       context: self.clone(),
+      #[cfg(target_env = "ohos")]
+      ohos_window_id,
     };
 
     let detached_webview = webview_id.map(|id| {
@@ -951,10 +985,8 @@ impl WindowBuilder for WindowBuilderWrapper {
     {
       use tao::platform::ohos::WindowBuilderExtOpenHarmony;
       window.inner = window.inner.with_label(&config.label);
-      // Config windows are always the main (UIAbility) window
-      window.inner = window
-        .inner
-        .with_window_kind(tao::platform::ohos::OHOSWindowKind::UIAbility);
+      // Window kind is determined by tao based on UIABILITY_CREATED flag:
+      // first window → UIAbility, subsequent windows → Float
     }
 
     let mut constraints = WindowSizeConstraints::default();
@@ -1522,6 +1554,8 @@ pub enum WindowMessage {
   DragWindow,
   ResizeDragWindow(tauri_runtime::ResizeDirection),
   RequestRedraw,
+  #[cfg(target_env = "ohos")]
+  OhosWindowId(Sender<Option<i64>>),
 }
 
 #[derive(Debug, Clone)]
@@ -1576,6 +1610,12 @@ pub enum WebviewMessage {
   SetZoom(f64),
   SetBackgroundColor(Option<Color>),
   ClearAllBrowsingData,
+  #[cfg(target_env = "ohos")]
+  CreatePdf(
+    String,
+    Option<tauri_runtime::PdfConfig>,
+    Box<dyn Fn(bool) + Send + 'static>,
+  ),
   // Getters
   Url(Sender<Result<String>>),
   Bounds(Sender<Result<tauri_runtime::dpi::Rect>>),
@@ -1972,6 +2012,23 @@ impl<T: UserEvent> WebviewDispatch<T> for WryWebviewDispatcher<T> {
     )
   }
 
+  #[cfg(target_env = "ohos")]
+  fn create_pdf(
+    &self,
+    path: String,
+    config: Option<tauri_runtime::PdfConfig>,
+    callback: Box<dyn Fn(bool) + Send + 'static>,
+  ) -> Result<()> {
+    send_user_message(
+      &self.context,
+      Message::Webview(
+        *self.window_id.lock().unwrap(),
+        self.webview_id,
+        WebviewMessage::CreatePdf(path, config, callback),
+      ),
+    )
+  }
+
   fn hide(&self) -> Result<()> {
     send_user_message(
       &self.context,
@@ -2011,6 +2068,8 @@ impl<T: UserEvent> WebviewDispatch<T> for WryWebviewDispatcher<T> {
 pub struct WryWindowDispatcher<T: UserEvent> {
   window_id: WindowId,
   context: Context<T>,
+  #[cfg(target_env = "ohos")]
+  ohos_window_id: Arc<std::sync::Mutex<Option<i64>>>,
 }
 
 // SAFETY: this is safe since the `Context` usage is guarded on `send_user_message`.
@@ -2448,6 +2507,33 @@ impl<T: UserEvent> WindowDispatch<T> for WryWindowDispatcher<T> {
   }
 
   fn set_focus(&self) -> Result<()> {
+    #[cfg(target_env = "ohos")]
+    {
+      let ohos_id = {
+        let guard = self.ohos_window_id.lock().unwrap();
+        *guard
+      };
+      log::debug!("[WRY] set_focus: ohos_window_id={:?}", ohos_id);
+      if let Some(id) = ohos_id {
+        if id > 0 {
+          log::debug!(
+            "[WRY] set_focus: dispatching focus_window({}) to main thread",
+            id
+          );
+          // NAPI env is only available on the main thread — dispatch via event loop
+          return send_user_message(
+            &self.context,
+            Message::Task(Box::new(move || {
+              if let Err(e) = openharmony_ability::window::focus_window(id) {
+                log::warn!("[WRY] focus_window({}) failed: {:?}", id, e);
+              }
+            })),
+          );
+        }
+        return Ok(()); // Main window: focus is OS-managed
+      }
+      log::warn!("[WRY] set_focus: ohos_window_id is None, falling back to event loop");
+    }
     send_user_message(
       &self.context,
       Message::Window(self.window_id, WindowMessage::SetFocus),
@@ -2455,6 +2541,31 @@ impl<T: UserEvent> WindowDispatch<T> for WryWindowDispatcher<T> {
   }
 
   fn set_focusable(&self, focusable: bool) -> Result<()> {
+    #[cfg(target_env = "ohos")]
+    {
+      let ohos_id = {
+        let guard = self.ohos_window_id.lock().unwrap();
+        *guard
+      };
+      if let Some(id) = ohos_id {
+        if id > 0 {
+          return send_user_message(
+            &self.context,
+            Message::Task(Box::new(move || {
+              if let Err(e) = openharmony_ability::window::set_window_focusable(id, focusable) {
+                log::warn!(
+                  "[WRY] set_window_focusable({},{}) failed: {:?}",
+                  id,
+                  focusable,
+                  e
+                );
+              }
+            })),
+          );
+        }
+        return Ok(());
+      }
+    }
     send_user_message(
       &self.context,
       Message::Window(self.window_id, WindowMessage::SetFocusable(focusable)),
@@ -2595,6 +2706,11 @@ impl<T: UserEvent> WindowDispatch<T> for WryWindowDispatcher<T> {
       &self.context,
       Message::Window(self.window_id, WindowMessage::SetBackgroundColor(color)),
     )
+  }
+
+  #[cfg(target_env = "ohos")]
+  fn ohos_window_id(&self) -> Result<Option<i64>> {
+    window_getter!(self, WindowMessage::OhosWindowId)
   }
 }
 
@@ -3106,9 +3222,20 @@ impl<T: UserEvent> Runtime<T> for Wry<T> {
       after_window_creation,
     )?;
 
+    #[cfg(target_env = "ohos")]
+    let ohos_window_id = {
+      let id = window.inner.as_ref().and_then(|w| {
+        use tao::window::WindowExtOhos;
+        w.ohos_window_id()
+      });
+      Arc::new(std::sync::Mutex::new(id))
+    };
+
     let dispatcher = WryWindowDispatcher {
       window_id,
       context: self.context.clone(),
+      #[cfg(target_env = "ohos")]
+      ohos_window_id,
     };
 
     self
@@ -3781,6 +3908,11 @@ fn handle_user_message<T: UserEvent>(
           WindowMessage::SetBackgroundColor(color) => {
             window.set_background_color(color.map(Into::into))
           }
+          #[cfg(target_env = "ohos")]
+          WindowMessage::OhosWindowId(tx) => {
+            use tao::platform::ohos::WindowExtOpenHarmony;
+            let _ = tx.send(window.window_id());
+          }
         }
       }
     }
@@ -3853,6 +3985,13 @@ fn handle_user_message<T: UserEvent>(
           tx.send(Err(Error::FailedToSendMessage)).unwrap();
         }
 
+        return;
+      }
+
+      #[cfg(target_env = "ohos")]
+      if let WebviewMessage::Reparent(_new_parent_window_id, tx) = webview_message {
+        log::warn!("Webview reparent is not supported on OHOS (BuilderNode is bound to UIContext)");
+        tx.send(Err(Error::FailedToSendMessage)).unwrap();
         return;
       }
 
@@ -3930,7 +4069,11 @@ fn handle_user_message<T: UserEvent>(
             #[allow(unknown_lints, clippy::manual_inspect)]
             windows.0.borrow_mut().get_mut(&window_id).map(|window| {
               if let Some(i) = window.webviews.iter().position(|w| w.id == webview.id) {
-                window.webviews.remove(i);
+                let wrapper = window.webviews.remove(i);
+                #[cfg(target_env = "ohos")]
+                {
+                  wrapper.inner.dispose_child();
+                }
               }
               window
             });
@@ -4002,7 +4145,10 @@ fn handle_user_message<T: UserEvent>(
             }
           }
           WebviewMessage::SetBackgroundColor(color) => {
-            log::debug!("[tauri-runtime-wry] SetBackgroundColor message received: {:?}", color);
+            log::debug!(
+              "[tauri-runtime-wry] SetBackgroundColor message received: {:?}",
+              color
+            );
             if let Err(e) =
               webview.set_background_color(color.map(Into::into).unwrap_or((255, 255, 255, 255)))
             {
@@ -4014,6 +4160,27 @@ fn handle_user_message<T: UserEvent>(
           WebviewMessage::ClearAllBrowsingData => {
             if let Err(e) = webview.clear_all_browsing_data() {
               log::error!("failed to clear webview browsing data: {e}");
+            }
+          }
+          #[cfg(target_env = "ohos")]
+          WebviewMessage::CreatePdf(path, config, callback) => {
+            let pdf_config = config.map(|c| wry::PdfConfig {
+              width: c.width,
+              height: c.height,
+              margin_top: c.margin_top,
+              margin_bottom: c.margin_bottom,
+              margin_left: c.margin_left,
+              margin_right: c.margin_right,
+              scale: c.scale,
+              should_print_background: c.should_print_background,
+            });
+            // NOTE: callback is consumed by create_pdf. On early errors (invalid env,
+            // missing function), openharmony-ability calls callback(false) before
+            // returning Err. On catastrophic NAPI failures (closure creation or call
+            // fails), the callback is dropped without invocation — the JS caller
+            // will hang. This is documented as unrecoverable.
+            if let Err(e) = webview.create_pdf(&path, pdf_config, callback) {
+              log::error!("failed to create PDF: {e}");
             }
           }
           // Getters
@@ -4313,21 +4480,26 @@ fn handle_event_loop<T: UserEvent>(
       // destroyed by ArkTS destroyWindow(). In that case, window_id() is unavailable,
       // so we skip this entry — the TaoWindowEvent::Destroyed handler (if fired)
       // will process the lifecycle via on_window_close (idempotent).
-      let matching_id = windows
-        .0
-        .borrow()
-        .iter()
-        .find_map(|(id, wrapper)| {
-          wrapper
-            .inner
-            .as_ref()
-            .and_then(|w| w.window_id())
-            .and_then(|wid| if wid == ohos_win_id as i64 { Some(*id) } else { None })
-        });
+      let matching_id = windows.0.borrow().iter().find_map(|(id, wrapper)| {
+        wrapper
+          .inner
+          .as_ref()
+          .and_then(|w| w.window_id())
+          .and_then(|wid| {
+            if wid == ohos_win_id as i64 {
+              Some(*id)
+            } else {
+              None
+            }
+          })
+      });
       if let Some(window_id) = matching_id {
         on_close_requested(callback, window_id, windows.clone(), exit_state.clone());
       } else {
-        log::debug!("[wry] OHOS pending close: no matching Tauri window for OHOS window ID {}", ohos_win_id);
+        log::debug!(
+          "[wry] OHOS pending close: no matching Tauri window for OHOS window ID {}",
+          ohos_win_id
+        );
       }
     }
   }
@@ -4485,13 +4657,17 @@ fn handle_event_loop<T: UserEvent>(
           TaoWindowEvent::CloseRequested => {
             if on_close_requested(callback, window_id, windows, exit_state) {
               #[cfg(not(target_env = "ohos"))]
-              { *control_flow = ControlFlow::Exit; }
+              {
+                *control_flow = ControlFlow::Exit;
+              }
             }
           }
           TaoWindowEvent::Destroyed => {
             if on_window_close(callback, window_id, windows, exit_state) {
               #[cfg(not(target_env = "ohos"))]
-              { *control_flow = ControlFlow::Exit; }
+              {
+                *control_flow = ControlFlow::Exit;
+              }
             }
           }
           TaoWindowEvent::Resized(size) => {
@@ -4536,20 +4712,26 @@ fn handle_event_loop<T: UserEvent>(
 
         if !should_prevent {
           #[cfg(not(target_env = "ohos"))]
-          { *control_flow = ControlFlow::Exit; }
+          {
+            *control_flow = ControlFlow::Exit;
+          }
         }
       }
       Message::Window(id, WindowMessage::Close) => {
         if on_close_requested(callback, id, windows, exit_state) {
           #[cfg(not(target_env = "ohos"))]
-          { *control_flow = ControlFlow::Exit; }
+          {
+            *control_flow = ControlFlow::Exit;
+          }
         }
       }
       Message::Window(id, WindowMessage::Destroy) => {
         // Call on_window_close directly, skip CloseRequested to avoid recursion
         if on_window_close(callback, id, windows, exit_state) {
           #[cfg(not(target_env = "ohos"))]
-          { *control_flow = ControlFlow::Exit; }
+          {
+            *control_flow = ControlFlow::Exit;
+          }
         }
       }
       Message::UserEvent(t) => callback(RunEvent::UserEvent(t)),
@@ -4564,7 +4746,12 @@ fn handle_event_loop<T: UserEvent>(
         );
       }
     },
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android", target_env = "ohos"))]
+    #[cfg(any(
+      target_os = "macos",
+      target_os = "ios",
+      target_os = "android",
+      target_env = "ohos"
+    ))]
     Event::Opened { urls } => {
       callback(RunEvent::Opened { urls });
     }
@@ -4653,7 +4840,10 @@ fn on_window_close<'a, T: UserEvent>(
 
         let recv = rx.try_recv();
         let should_prevent = matches!(recv, Ok(ExitRequestedEventAction::Prevent));
-        log::info!("[wry] ExitRequested (all windows closed) should_prevent: {}", should_prevent);
+        log::info!(
+          "[wry] ExitRequested (all windows closed) should_prevent: {}",
+          should_prevent
+        );
 
         // Mark ExitRequested as sent
         exit_state.0.store(true, Ordering::SeqCst);
@@ -4874,10 +5064,15 @@ fn create_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
   let focused_webview = Arc::new(Mutex::new(None));
 
   if let Some(webview) = webview {
+    // On OHOS, the initial webview always uses WindowContent (not WindowChild)
+    // because ArkUI Web components fill their parent container by default ("100%").
+    // Using WindowChild would set explicit pixel dimensions via WebViewStyle,
+    // causing layout differences on high-DPI devices. Child webviews created via
+    // add_child still use WindowChild with explicit bounds.
     webviews.push(create_webview(
-      #[cfg(feature = "unstable")]
+      #[cfg(all(feature = "unstable", not(target_env = "ohos")))]
       WebviewKind::WindowChild,
-      #[cfg(not(feature = "unstable"))]
+      #[cfg(any(not(feature = "unstable"), target_env = "ohos"))]
       WebviewKind::WindowContent,
       &window,
       Arc::new(Mutex::new(window_id)),
@@ -5162,6 +5357,10 @@ You may have it installed on another user account, but it is not available for t
             #[cfg(windows)]
             webview: webview.webview(),
           }
+        }
+        #[cfg(target_env = "ohos")]
+        tauri_runtime::webview::NewWindowResponse::Create { .. } => {
+          wry::NewWindowResponse::Create {}
         }
         tauri_runtime::webview::NewWindowResponse::Deny => wry::NewWindowResponse::Deny,
       }

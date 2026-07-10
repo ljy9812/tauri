@@ -22,12 +22,14 @@ use cargo_mobile2::{
 };
 use clap::{Parser, Subcommand};
 use std::{
-  env::set_var,
+  env::{set_var, var},
   fs::{create_dir_all, write},
+  path::PathBuf,
   thread::sleep,
   time::Duration,
 };
 use sublime_fuzzy::best_match;
+use tauri_utils::config::OpenHarmonyDeviceTypes;
 use tauri_utils::resources::ResourcePaths;
 
 use super::{
@@ -45,6 +47,8 @@ mod dev;
 mod dev_eco_studio_script;
 pub(crate) mod plugins;
 pub(crate) mod project;
+mod run;
+pub(crate) mod signing;
 
 #[derive(Deserialize)]
 pub struct AppConfig {
@@ -98,6 +102,7 @@ enum Commands {
   Init(InitOptions),
   Dev(dev::Options),
   Build(build::Options),
+  Run(run::Options),
   #[clap(hide(true))]
   DevEcoStudioScript(dev_eco_studio_script::Options),
 }
@@ -117,6 +122,7 @@ pub fn command(cli: Cli, verbosity: u8) -> Result<()> {
     }
     Commands::Dev(options) => dev::command(options, noise_level)?,
     Commands::Build(options) => build::command(options, noise_level)?,
+    Commands::Run(options) => run::command(options, noise_level)?,
     Commands::DevEcoStudioScript(options) => dev_eco_studio_script::command(options)?,
   }
 
@@ -332,6 +338,44 @@ fn open_and_wait(config: &OpenHarmonyConfig, env: &Env) -> ! {
   }
 }
 
+/// The active entry module name (`entry_mobile` / `entry_desktop`), driven by
+/// `OHOS_DEVICE_TYPE` (set by the CLI build/dev commands). Falls back to
+/// `entry_mobile` when unset. Used by the build-time injectors (icons, plugin
+/// oh-package deps) and build-profile module selection to target the entry
+/// being built.
+pub fn active_entry_module() -> String {
+  let form = var("OHOS_DEVICE_TYPE").unwrap_or_else(|_| "mobile".to_string());
+  format!("entry_{form}")
+}
+
+/// The conf `deviceTypes` list for the given form. With the per-form config
+/// schema (`{ mobile: [...], desktop: [...]] }`), this is a direct lookup — no
+/// intersection with a hardcoded device-class set.
+pub fn device_types_for_form(
+  device_types: &OpenHarmonyDeviceTypes,
+  form: &str,
+) -> Vec<String> {
+  match form {
+    "mobile" => device_types.mobile.clone(),
+    "desktop" => device_types.desktop.clone(),
+    _ => Vec::new(),
+  }
+}
+
+/// Active device forms: `mobile` if its list is non-empty, `desktop` if its
+/// list is non-empty. Used by `build --app` to decide which entry modules to
+/// compile and package.
+pub fn forms_for_device_types(device_types: &OpenHarmonyDeviceTypes) -> Vec<&'static str> {
+  let mut forms = Vec::new();
+  if !device_types.mobile.is_empty() {
+    forms.push("mobile");
+  }
+  if !device_types.desktop.is_empty() {
+    forms.push("desktop");
+  }
+  forms
+}
+
 fn inject_resources(config: &OpenHarmonyConfig, tauri_config: &TauriConfig) -> Result<()> {
   let asset_dir = config.project_dir().join(DEFAULT_ASSET_DIR);
   create_dir_all(&asset_dir).fs_context("failed to create asset directory", asset_dir.clone())?;
@@ -358,5 +402,92 @@ fn inject_resources(config: &OpenHarmonyConfig, tauri_config: &TauriConfig) -> R
     }
   }
 
+  Ok(())
+}
+
+fn inject_icons(
+  config: &OpenHarmonyConfig,
+  tauri_config: &TauriConfig,
+  tauri_dir: &std::path::Path,
+) -> Result<()> {
+  let icons = &tauri_config.bundle.icon;
+  if icons.is_empty() {
+    return Ok(());
+  }
+
+  let project_dir = config.project_dir();
+  let app_media_dir = project_dir.join("AppScope/resources/base/media");
+  // `entry_media_dir` targets the *active* entry module (entry_{OHOS_DEVICE_TYPE})
+  // via `active_entry_module()`, which reads the env var the CLI set for the
+  // requested form. For `--app`, the per-form loop in `command` re-sets the env
+  // and calls this once per form so both entries get icons.
+  let entry_media_dir = project_dir
+    .join(format!("{}/src/main/resources/base/media", active_entry_module()));
+
+  let mut foreground_path: Option<PathBuf> = None;
+  let mut background_path: Option<PathBuf> = None;
+  let mut starticon_path: Option<PathBuf> = None;
+
+  for icon in icons {
+    let path = PathBuf::from(icon);
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+      continue;
+    };
+    let stem_lower = stem.to_lowercase();
+    let is_ohos_icon =
+      stem_lower.ends_with("-starticon") || stem_lower.ends_with("-foreground") || stem_lower.ends_with("-background");
+    if !is_ohos_icon {
+      continue;
+    }
+    // DevEco's resource compiler expects real PNG data in .png media files.
+    // Reject non-PNG sources instead of misnaming them, which would break HAP packaging.
+    let is_png = path
+      .extension()
+      .and_then(|e| e.to_str())
+      .map(|e| e.eq_ignore_ascii_case("png"))
+      .unwrap_or(false);
+    if !is_png {
+      log::warn!(
+        "OHOS icon '{}' is not a PNG file; skipping (DevEco requires PNG)",
+        path.display()
+      );
+      continue;
+    }
+    let full_path = tauri_dir.join(&path);
+    if stem_lower.ends_with("-starticon") {
+      starticon_path = Some(full_path);
+    } else if stem_lower.ends_with("-foreground") {
+      foreground_path = Some(full_path);
+    } else if stem_lower.ends_with("-background") {
+      background_path = Some(full_path);
+    }
+  }
+
+  let (Some(fg), Some(bg)) = (&foreground_path, &background_path) else {
+    log::warn!(
+      "OHOS icon injection skipped: foreground ({}) and background ({}) must both be present in bundle.icon with the -foreground / -background suffix",
+      foreground_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "missing".into()),
+      background_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "missing".into()),
+    );
+    return Ok(());
+  };
+
+  // Copy to AppScope media
+  create_dir_all(&app_media_dir)
+    .fs_context("failed to create AppScope media directory", app_media_dir.clone())?;
+  crate::helpers::fs::copy_file(fg, app_media_dir.join("foreground.png"))?;
+  crate::helpers::fs::copy_file(bg, app_media_dir.join("background.png"))?;
+
+  // Copy to entry media
+  create_dir_all(&entry_media_dir)
+    .fs_context("failed to create entry media directory", entry_media_dir.clone())?;
+  crate::helpers::fs::copy_file(fg, entry_media_dir.join("foreground.png"))?;
+  crate::helpers::fs::copy_file(bg, entry_media_dir.join("background.png"))?;
+
+  // startIcon: use dedicated *-starticon file if present, otherwise fall back to foreground
+  let starticon_src = starticon_path.as_ref().unwrap_or(fg);
+  crate::helpers::fs::copy_file(starticon_src, entry_media_dir.join("startIcon.png"))?;
+
+  log::info!("OHOS icons injected successfully");
   Ok(())
 }

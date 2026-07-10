@@ -76,6 +76,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "Tauri Test",
     "fileAssociations": [
       {
         "ext": ["png"],
@@ -105,7 +106,10 @@
       "../../.icons/128x128@2x.png",
       "../../.icons/icon.icns",
       "../../.icons/icon.ico",
-      "../../.icons/AppIcon.icon"
+      "../../.icons/AppIcon.icon",
+      "../../.icons/icon-foreground.png",
+      "../../.icons/icon-background.png",
+      "../../.icons/icon-starticon.png"
     ],
     "windows": {
       "wix": {
@@ -118,6 +122,12 @@
       },
       "nsis": {
         "compression": "none"
+      }
+    },
+    "openHarmony": {
+      "deviceTypes": {
+        "mobile": ["phone", "tablet"],
+        "desktop": ["2in1"]
       }
     }
   }

@@ -72,7 +72,7 @@ schemars_derive = { git = 'https://github.com/tauri-apps/schemars.git', branch =
 tauri = { path = "./crates/tauri" }
 tauri-plugin = { path = "./crates/tauri-plugin" }
 tauri-utils = { path = "./crates/tauri-utils" }
-cargo-mobile2 = { git = "https://github.com/tauri-apps/cargo-mobile2", branch = "feat/ohos", default-features = false }
+cargo-mobile2 = { git = "https://github.com/Eulogizethesun/cargo-mobile2", branch = "ohdev-git", default-features = false }
 wry = { git = "https://github.com/Eulogizethesun/wry", branch = "ohdev-git" }
 #tao = { git = "https://github.com/richerfu/tao", branch = "feat-ohos-webview" }
 tao = { git = "https://github.com/Eulogizethesun/tao", branch = "ohdev-git" }
@@ -80,3 +80,4 @@ muda = { git = "https://github.com/Eulogizethesun/muda", branch = "ohdev-git" }
 tray-icon = { git = "https://github.com/Eulogizethesun/tray-icon", branch = "ohdev-git" }
 openharmony-ability = { git = "https://github.com/Eulogizethesun/openharmony-ability", branch = "ohdev-git" }
 openharmony-ability-derive = { git = "https://github.com/Eulogizethesun/openharmony-ability", branch = "ohdev-git" }
+window-vibrancy = { git = "https://github.com/Eulogizethesun/window-vibrancy", branch = "ohdev-git" }

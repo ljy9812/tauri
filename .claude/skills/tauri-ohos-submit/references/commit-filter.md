@@ -43,3 +43,5 @@
 | muda | `muda` | Eulogizethesun/muda |
 | tray-icon | `tray-icon` | Eulogizethesun/tray-icon |
 | openharmony-ability | `openharmony-ability` | Eulogizethesun/openharmony-ability |
+| sentry-tauri | `sentry-tauri` | Eulogizethesun/sentry-tauri |
+| window-vibrancy | `window-vibrancy` | Eulogizethesun/window-vibrancy |

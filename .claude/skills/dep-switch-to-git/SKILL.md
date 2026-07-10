@@ -5,9 +5,11 @@ description: 将 Tauri OHOS 项目的本地 path 依赖替换为 Eulogizethesun/
 
 # dep-switch-to-git
 
-将 7 个仓库中所有跨仓 `path` 依赖替换为 `git` 依赖（`Eulogizethesun/<repo>`, branch `ohdev-git`）。
+将 10 个仓库中所有跨仓 `path` 依赖替换为 `git` 依赖（`Eulogizethesun/<repo>`, branch `ohdev-git`）。
 
-> **不会修改**：仓内（intra-repo）path 依赖、`cargo-mobile2`、`schemars_derive` 等已有 git 依赖。
+> **不会修改**：仓内（intra-repo）path 依赖、`schemars_derive` 等已有 git 依赖。
+>
+> ⚠️ **`cargo-mobile2` 现在需要迁移**：早期 `cargo-mobile2` 指向 `tauri-apps/cargo-mobile2#feat/ohos`（已被 git 化，故旧版 skill 标注"不修改"）。但 `ohdev` 已将 `cargo-mobile2` 收回本地工作区（`path = "../cargo-mobile2"`）以加入 `app::build (assembleApp)` 等改动，而 `tauri-apps/cargo-mobile2#feat/ohos` 没有这些改动。因此 `cargo-mobile2` 必须迁移到 `Eulogizethesun/cargo-mobile2#ohdev-git`（与其他依赖一致），不能再用 `tauri-apps` 目标。
 
 ## 执行流程
 
@@ -24,6 +26,9 @@ description: 将 Tauri OHOS 项目的本地 path 依赖替换为 Eulogizethesun/
 | tray-icon | `tray-icon/` |
 | plugins-workspace | `plugins-workspace/` |
 | openharmony-ability | `openharmony-ability/`（叶子节点，无需改动） |
+| cargo-mobile2 | `cargo-mobile2/`（叶子节点，无跨仓依赖，无需改动；但被 tauri 引用） |
+| sentry-tauri | `sentry-tauri/`（叶子节点，无跨仓依赖；被 tauri 引用） |
+| window-vibrancy | `window-vibrancy/`（迁移自身 `openharmony-ability` 依赖，见 2.13） |
 
 对每个仓库执行：
 ```bash
@@ -38,7 +43,8 @@ grep -rn 'path\s*=\s*"\.\.' --include="Cargo.toml" . | grep -v target/
 使用 Edit 工具，按以下映射表逐条替换。**必须精确匹配 old_string**，仅修改 `path` 部分，保留所有 `features`、`default-features`、`optional`、`version` 等属性。
 
 > ⚠️ **不要修改** 被注释的行（以 `#` 开头）。
-> ⚠️ **不要修改** `cargo-mobile2` 和 `schemars_derive` 相关行。
+> ⚠️ **不要修改** `schemars_derive` 相关行（已是 git 依赖）。
+> ⚠️ **`cargo-mobile2` 必须迁移**（见 2.1、2.1b），目标为 `Eulogizethesun/cargo-mobile2#ohdev-git`，不要保留 path、也不要用旧的 `tauri-apps` 目标。
 > ⚠️ **替换顺序很重要**：`openharmony-ability-derive` 必须在 `openharmony-ability` 之前替换。
 > ⚠️ **插件必须逐个替换**：不能用通配模式。
 
@@ -65,6 +71,21 @@ to:   muda = { git = "https://github.com/Eulogizethesun/muda", branch = "ohdev-g
 
 from: tray-icon = { path = "../tray-icon" }
 to:   tray-icon = { git = "https://github.com/Eulogizethesun/tray-icon", branch = "ohdev-git" }
+
+# cargo-mobile2: 目标必须是 Eulogizethesun (不是 tauri-apps), 因本地工作区有 app::build 改动
+from: cargo-mobile2 = { path = "../cargo-mobile2", default-features = false }
+to:   cargo-mobile2 = { git = "https://github.com/Eulogizethesun/cargo-mobile2", branch = "ohdev-git", default-features = false }
+
+# window-vibrancy: ohdev 新增的跨仓依赖
+from: window-vibrancy = { path = "../window-vibrancy" }
+to:   window-vibrancy = { git = "https://github.com/Eulogizethesun/window-vibrancy", branch = "ohdev-git" }
+```
+
+#### 2.1b tauri/crates/tauri-cli/Cargo.toml — cargo-mobile2
+
+```
+from: cargo-mobile2 = { path = "../../../cargo-mobile2", default-features = false }
+to:   cargo-mobile2 = { git = "https://github.com/Eulogizethesun/cargo-mobile2", branch = "ohdev-git", default-features = false }
 ```
 
 #### 2.2 tauri/crates/tauri/Cargo.toml — desktop deps (cfg not ohos)
@@ -181,6 +202,14 @@ to:   tauri-plugin-dialog = { git = "https://github.com/Eulogizethesun/plugins-w
 
 from: tauri-plugin-single-instance = { path = "../../../../plugins-workspace/plugins/single-instance" }
 to:   tauri-plugin-single-instance = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+
+# ohdev 新增插件
+from: tauri-plugin-global-shortcut = { path = "../../../../plugins-workspace/plugins/global-shortcut" }
+to:   tauri-plugin-global-shortcut = { git = "https://github.com/Eulogizethesun/plugins-workspace", branch = "ohdev-git" }
+
+# sentry-tauri 是独立仓 (不是 plugins-workspace 子目录), 指向 Eulogizethesun/sentry-tauri
+from: tauri-plugin-sentry = { path = "../../../../sentry-tauri" }
+to:   tauri-plugin-sentry = { git = "https://github.com/Eulogizethesun/sentry-tauri", branch = "ohdev-git" }
 ```
 
 #### 2.7 tao/Cargo.toml
@@ -242,7 +271,22 @@ to:   openharmony-ability = { git = "https://github.com/Eulogizethesun/openharmo
 single-instance/Cargo.toml:
 from: openharmony-ability = { path = "../../../openharmony-ability/crates/ability" }
 to:   openharmony-ability = { git = "https://github.com/Eulogizethesun/openharmony-ability", branch = "ohdev-git" }
+
+global-shortcut/Cargo.toml:   # ohdev 新增插件
+from: openharmony-ability = { path = "../../../openharmony-ability/crates/ability", features = ["global_shortcut"] }
+to:   openharmony-ability = { git = "https://github.com/Eulogizethesun/openharmony-ability", branch = "ohdev-git", features = ["global_shortcut"] }
 ```
+
+#### 2.13 window-vibrancy/Cargo.toml — openharmony-ability
+
+window-vibrancy 是 ohdev 新加入工作区的仓，自身有一处跨仓 `openharmony-ability` 依赖需要迁移（保留 `default-features = false, features = ["window"]`）。
+
+```
+from: openharmony-ability = { path = "../openharmony-ability/crates/ability", default-features = false, features = ["window"] }
+to:   openharmony-ability = { git = "https://github.com/Eulogizethesun/openharmony-ability", branch = "ohdev-git", default-features = false, features = ["window"] }
+```
+
+> 仓内自引用（如 `examples/tauri/src-tauri/Cargo.toml` 的 `window-vibrancy = { path = "../../../" }`）保留不动。
 
 ### Step 3: 验证
 

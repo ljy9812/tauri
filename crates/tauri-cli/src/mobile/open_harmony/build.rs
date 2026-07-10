@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 use super::{
-  delete_codegen_vars, ensure_init, env, get_app, get_config, inject_resources, log_finished,
-  open_and_wait, plugins, MobileTarget, OptionsHandle,
+  active_entry_module, delete_codegen_vars, ensure_init, env, get_app, get_config, inject_resources,
+  log_finished, open_and_wait, plugins, signing::OhosSigningConfig, MobileTarget, OptionsHandle,
 };
 use crate::{
   build::Options as BuildOptions,
@@ -21,7 +21,7 @@ use clap::{ArgAction, Parser};
 
 use crate::error::Context;
 use cargo_mobile2::{
-  open_harmony::{config::Config as OpenHarmonyConfig, env::Env, hap, target::Target},
+  open_harmony::{app, config::Config as OpenHarmonyConfig, env::Env, hap, target::Target},
   opts::{NoiseLevel, Profile},
   target::TargetTrait,
 };
@@ -72,6 +72,12 @@ pub struct Options {
   /// Device type to build for (mobile or desktop)
   #[clap(long, default_value = "mobile", value_parser(["mobile", "desktop"]))]
   pub device_type: String,
+  /// Build the multi-entry `.app` (AppGallery unified package) for every device
+  /// form in `bundle.openHarmony.deviceTypes`, instead of a single-form HAP.
+  /// Device forms are derived from config; conflicts with `--device-type` and
+  /// `--open` (packaging vs. opening DevEco are mutually exclusive).
+  #[clap(long, conflicts_with_all = ["device_type", "open"])]
+  pub app: bool,
   /// Command line arguments passed to the runner.
   /// Use `--` to explicitly mark the start of the arguments.
   /// e.g. `tauri ohos build -- [runnerArgs]`.
@@ -178,29 +184,98 @@ pub fn command(options: Options, noise_level: NoiseLevel) -> Result<()> {
 
   crate::build::setup(&interface, &mut build_options, &tauri_config, &dirs, true)?;
 
-  // run an initial build to initialize plugins
-  first_target
-    .build(&config, &metadata, &env, noise_level, true, profile)
-    .context("failed to build OpenHarmony app")?;
+  if options.app {
+    let active_forms =
+      super::forms_for_device_types(&tauri_config.bundle.open_harmony.device_types);
+    if active_forms.is_empty() {
+      crate::error::bail!(
+        "build --app: no device forms derived from bundle.openHarmony.deviceTypes (got {:?}); \
+         expected at least one of phone/tablet/car/wearable/tv/2in1",
+        tauri_config.bundle.open_harmony.device_types
+      );
+    }
+    // Compile the `.so` for each active form (sets cfg(mobile)/cfg(desktop)),
+    // inject icons + plugin deps into each entry module. OHOS_DEVICE_TYPE drives
+    // compile_lib's `--dist` (entry_{form}/libs) and the injectors' target entry.
+    for form in &active_forms {
+      set_var("OHOS_DEVICE_TYPE", form);
+      first_target
+        .build(&config, &metadata, &env, noise_level, true, profile)
+        .context("failed to build OpenHarmony app")?;
+      super::inject_icons(&config, &tauri_config, dirs.tauri)?;
+      if !plugin_metadata.is_empty() {
+        plugins::update_entry_package(&config.project_dir(), &plugin_metadata)?;
+      }
+      // Align this entry's module.json5 deviceTypes to the current conf subset
+      // so conf `deviceTypes` changes apply on rebuild without re-init.
+      plugins::write_entry_device_types(
+        &config.project_dir(),
+        form,
+        &super::device_types_for_form(&tauri_config.bundle.open_harmony.device_types, form),
+      )
+      .context("failed to align entry deviceTypes")?;
+    }
+    run_app(
+      &config,
+      &mut env,
+      noise_level,
+      profile,
+      &tauri_config,
+      &active_forms,
+    )?;
+  } else {
+    // run an initial build to initialize plugins
+    first_target
+      .build(&config, &metadata, &env, noise_level, true, profile)
+      .context("failed to build OpenHarmony app")?;
 
-  let open = options.open;
-  let _handle = run_build(
-    interface,
-    options,
-    build_options,
-    tauri_config,
-    profile,
-    &config,
-    &mut env,
-    noise_level,
-    dirs,
-    plugin_metadata,
-  )?;
+    let open = options.open;
+    let _handle = run_build(
+      interface,
+      options,
+      build_options,
+      tauri_config,
+      profile,
+      &config,
+      &mut env,
+      noise_level,
+      dirs,
+    )?;
 
-  if open {
-    open_and_wait(&config, &env);
+    if open {
+      open_and_wait(&config, &env);
+    }
   }
 
+  Ok(())
+}
+
+/// Package the multi-entry `.app` via `hvigorw assembleApp`. Assumes `command`
+/// has already done the per-form setup for every active form: compiled the
+/// `.so` into `entry_{form}/libs`, injected icons + plugin deps, and rewritten
+/// each entry's `module.json5` deviceTypes. This fn only activates all entry
+/// modules in build-profile, skips the tauriPlugin, then signs + logs.
+#[allow(clippy::too_many_arguments)]
+fn run_app(
+  config: &OpenHarmonyConfig,
+  env: &mut Env,
+  noise_level: NoiseLevel,
+  profile: Profile,
+  tauri_config: &ConfigMetadata,
+  active_forms: &[&str],
+) -> Result<()> {
+  inject_resources(config, tauri_config)?;
+
+  let entries: Vec<String> = active_forms.iter().map(|f| format!("entry_{f}")).collect();
+  let entries_ref: Vec<&str> = entries.iter().map(|s| s.as_str()).collect();
+  plugins::write_build_profile_modules(&config.project_dir(), &entries_ref)
+    .context("failed to select entry modules for app")?;
+
+  set_var("TAURI_OHOS_SKIP_DEVECO_SCRIPT", "1");
+
+  let app_output = app::build(config, env, noise_level, profile).context("failed to build app")?;
+  let app_outputs = sign_if_configured(vec![app_output], env)?;
+  log_finished(app_outputs, "App");
   Ok(())
 }
 
@@ -215,7 +290,6 @@ fn run_build(
   env: &mut Env,
   noise_level: NoiseLevel,
   dirs: Dirs,
-  plugin_metadata: Vec<plugins::PluginMeta>,
 ) -> Result<OptionsHandle> {
   let interface_options = InterfaceOptions {
     debug: build_options.debug,
@@ -246,18 +320,59 @@ fn run_build(
   let handle = write_options(&tauri_config, cli_options)?;
 
   inject_resources(config, &tauri_config)?;
+  super::inject_icons(config, &tauri_config, dirs.tauri)?;
 
-  if !plugin_metadata.is_empty() {
-    let project_dir = config.project_dir();
-    for plugin in &plugin_metadata {
-      plugins::copy_plugin_har(plugin, &project_dir)
-        .context(format!("Failed to copy plugin '{}' HAR", plugin.name))?;
-    }
-    plugins::update_plugin_configs(&project_dir, &plugin_metadata)
-      .context("Failed to update plugin configurations")?;
+  // Activate only the entry module for the requested device form so hvigor
+  // builds a single HAP (`entry_{form}-default-*.hap`). Preserves shared
+  // non-entry modules (`tauri`, `dialog`, ...).
+  let active_entry = active_entry_module();
+  plugins::write_build_profile_modules(&config.project_dir(), &[&active_entry])
+    .context("failed to select active entry module")?;
+  // Align the active entry's module.json5 deviceTypes to the current conf
+  // subset so conf `deviceTypes` changes apply on rebuild without re-init.
+  // An empty subset is a config error (the requested form has no devices in
+  // conf `deviceTypes`) — producing a HAP with `deviceTypes: []` would be
+  // invalid, so bail instead of silently writing an empty array.
+  let form_device_types = super::device_types_for_form(
+    &tauri_config.bundle.open_harmony.device_types,
+    &options.device_type,
+  );
+  if form_device_types.is_empty() {
+    let expected = match options.device_type.as_str() {
+      "mobile" => "phone/tablet/car/wearable/tv",
+      "desktop" => "2in1",
+      _ => "the form's device classes",
+    };
+    crate::error::bail!(
+      "build --device-type {}: `bundle.openHarmony.deviceTypes` has no {}-class devices (got {:?}); \
+       add one of {} to the config or build a form your config covers",
+      options.device_type,
+      options.device_type,
+      tauri_config.bundle.open_harmony.device_types,
+      expected,
+    );
+  }
+  plugins::write_entry_device_types(
+    &config.project_dir(),
+    &options.device_type,
+    &form_device_types,
+  )
+  .context("failed to align entry deviceTypes")?;
+
+  // The CLI has already compiled the Rust `.so` via `first_target.build` in
+  // `command`. In the non-`--open` path, tell the hvigor `tauriPlugin` to
+  // skip re-running `dev-eco-studio-script` so we don't double-build the
+  // `.so` nor re-enter the CLI's WebSocket `read_options` (which can hit a
+  // stale server-addr file and panic). `--open` leaves the plugin active so
+  // building inside DevEco Studio still compiles the `.so`.
+  if !options.open {
+    set_var("TAURI_OHOS_SKIP_DEVECO_SCRIPT", "1");
   }
 
   let hap_outputs = hap::build(config, env, noise_level, profile).context("failed to build hap")?;
+
+  // Sign the HAP using hap-sign-tool.jar if environment variables are set
+  let hap_outputs = sign_if_configured(hap_outputs, env)?;
 
   log_finished(hap_outputs, "HAP");
 
@@ -311,4 +426,60 @@ pub(crate) fn inject_plugins(
     metadata.len()
   );
   Ok(metadata)
+}
+
+/// Sign HAP / `.app` artifacts if OHOS signing environment variables are
+/// configured. `hap-sign-tool.jar sign-app` signs both `.hap` and `.app` with
+/// the same parameters, so this is extension-agnostic.
+///
+/// Idempotent: a path already ending in `-signed` is returned unchanged; an
+/// `-unsigned` path is signed to its `-signed` counterpart (e.g.
+/// `entry_mobile-default-unsigned.hap` -> `entry_mobile-default-signed.hap`,
+/// same for `.app`). Selection of which artifact to feed in is by name (prefer
+/// `-unsigned`), not by mtime, so stale signed files can't be picked by accident.
+fn sign_if_configured(
+  outputs: Vec<std::path::PathBuf>,
+  env: &Env,
+) -> Result<Vec<std::path::PathBuf>> {
+  let signing_config = match OhosSigningConfig::from_env()? {
+    Some(cfg) => cfg,
+    None => {
+      // No env vars set — check if any signed artifact already exists
+      let has_signed = outputs.iter().any(|p| {
+        let name = p.file_name().unwrap_or_default().to_string_lossy();
+        name.contains("-signed")
+      });
+      if !has_signed {
+        log::warn!(
+          "No signed artifact found and OHOS signing environment variables are not set. \
+           The HAP/App will not be installable on a device. \
+           Set OHOS_KEYSTORE_FILE, OHOS_KEYSTORE_PASSWORD, OHOS_KEY_ALIAS, \
+           OHOS_KEY_PASSWORD, OHOS_APP_CERT_FILE, and OHOS_PROFILE_FILE to enable signing."
+        );
+      }
+      return Ok(outputs);
+    }
+  };
+
+  let mut signed_outputs = Vec::new();
+  for path in &outputs {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    // Already signed — skip re-signing so the step is idempotent and never
+    // tries to sign a file onto itself (inFile == outFile).
+    if name.contains("-signed") {
+      signed_outputs.push(path.clone());
+      continue;
+    }
+    // Derive signed output path: entry-default-unsigned.hap -> entry-default-signed.hap
+    // (same for .app: xxx-unsigned.app -> xxx-signed.app)
+    let signed_path = path.with_file_name(name.replace("unsigned", "signed"));
+
+    signing_config
+      .sign_hap(path, &signed_path, env)
+      .context("failed to sign artifact")?;
+
+    signed_outputs.push(signed_path);
+  }
+
+  Ok(signed_outputs)
 }

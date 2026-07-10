@@ -15,6 +15,7 @@
     "@tauri-apps/plugin-clipboard-manager": "file:../../../plugins-workspace/plugins/clipboard-manager",
     "@tauri-apps/plugin-dialog": "file:../../../plugins-workspace/plugins/dialog",
     "@tauri-apps/plugin-fs": "file:../../../plugins-workspace/plugins/fs",
+    "@tauri-apps/plugin-global-shortcut": "file:../../../plugins-workspace/plugins/global-shortcut",
     "@tauri-apps/plugin-http": "file:../../../plugins-workspace/plugins/http",
     "@tauri-apps/plugin-log": "file:../../../plugins-workspace/plugins/log",
     "@tauri-apps/plugin-notification": "file:../../../plugins-workspace/plugins/notification",

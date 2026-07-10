@@ -126,8 +126,19 @@ pub fn find_plugin_har(plugin_name: &str, project_dir: &Path) -> Result<PathBuf>
   )
 }
 
-const BUILTIN_PLUGINS: &[(&str, &str, &str)] =
-  &[("dialog", "@tauri/plugin-dialog", "DialogPlugin")];
+const BUILTIN_PLUGINS: &[(&str, &str, &str)] = &[
+  ("dialog", "@tauri/plugin-dialog", "DialogPlugin"),
+  (
+    "notification",
+    "@tauri/plugin-notification",
+    "NotificationPlugin",
+  ),
+  (
+    "global-shortcut",
+    "@tauri/plugin-global-shortcut",
+    "GlobalShortcutPlugin",
+  ),
+];
 
 pub fn detect_all_plugins(project_dir: &Path) -> Result<Vec<DetectedPlugin>> {
   let cargo_manifest = project_dir.join("Cargo.toml");
@@ -534,14 +545,16 @@ pub fn update_build_profile(project_dir: &Path, plugins: &[PluginMeta]) -> Resul
     .with_context(|| "build-profile.json5 has no 'modules' array")?;
 
   for plugin in plugins {
+    // OHOS module names must match ^[a-zA-Z][0-9a-zA-Z_.]*$ (no hyphens)
+    let module_name = plugin.name.replace('-', "");
     if !modules
       .iter()
-      .any(|m| m.get("name").and_then(|v| v.as_str()) == Some(&plugin.name))
+      .any(|m| m.get("name").and_then(|v| v.as_str()) == Some(&module_name))
     {
       log::info!("Adding module for plugin '{}'", plugin.name);
 
       let module = serde_json::json!({
-        "name": plugin.name,
+        "name": module_name,
         "srcPath": format!("./{}", plugin.name),
         "targets": [{
           "name": "default",
@@ -562,24 +575,126 @@ pub fn update_build_profile(project_dir: &Path, plugins: &[PluginMeta]) -> Resul
   Ok(())
 }
 
+/// Rewrite `build-profile.json5`'s `modules` array to activate exactly the
+/// given entry modules — `["entry_mobile"]` for a single-form build,
+/// `["entry_mobile", "entry_desktop"]` for `--app` — preserving the shared
+/// non-entry modules already present (`tauri`, `dialog`, ...). This selects
+/// which entry HAP(s) hvigor builds.
+///
+/// Note: entry modules are rebuilt from scratch (only `name`/`srcPath`/`targets`
+/// are written). User customizations on an entry's build-profile module object
+/// (e.g. an added `buildOption`) would be dropped — the template-generated
+/// entries don't carry any, so this is acceptable. Non-entry modules are
+/// preserved verbatim.
+pub fn write_build_profile_modules(
+  project_dir: &Path,
+  active_entries: &[&str],
+) -> Result<()> {
+  let build_profile_path = project_dir.join("build-profile.json5");
+  let content = fs::read_to_string(&build_profile_path)
+    .with_context(|| "failed to read build-profile.json5")?;
+  let mut profile: Value = parse_json5(&content).context("failed to parse build-profile.json5")?;
+
+  // Keep non-entry modules (tauri, dialog, ...); drop any entry-* module so we
+  // can re-insert only the active ones.
+  let kept: Vec<Value> = {
+    let modules = profile
+      .get_mut("modules")
+      .and_then(|m| m.as_array_mut())
+      .with_context(|| "build-profile.json5 has no 'modules' array")?;
+    let mut kept = Vec::new();
+    for m in modules.iter() {
+      let is_entry = m
+        .get("name")
+        .and_then(|n| n.as_str())
+        .map(|n| n.starts_with("entry"))
+        .unwrap_or(false);
+      if !is_entry {
+        kept.push(m.clone());
+      }
+    }
+    kept
+  };
+
+  let mut new_modules: Vec<Value> = active_entries
+    .iter()
+    .map(|name| {
+      serde_json::json!({
+        "name": name,
+        "srcPath": format!("./{name}"),
+        "targets": [{ "name": "default", "applyToProducts": ["default"] }]
+      })
+    })
+    .collect();
+  new_modules.extend(kept);
+
+  {
+    let modules = profile
+      .get_mut("modules")
+      .and_then(|m| m.as_array_mut())
+      .with_context(|| "build-profile.json5 has no 'modules' array")?;
+    *modules = new_modules;
+  }
+
+  let updated = serialize_json5(&profile)?;
+  fs::write(&build_profile_path, updated)
+    .with_context(|| "failed to write build-profile.json5")?;
+  log::info!("Activated entry modules: {:?}", active_entries);
+  Ok(())
+}
+
+/// Rewrite `entry_{form}/src/main/module.json5`'s `deviceTypes` to the given
+/// subset, so conf `deviceTypes` changes take effect on rebuild without
+/// re-running `ohos init`. `form` selects the entry module (`entry_{form}`).
+pub fn write_entry_device_types(
+  project_dir: &Path,
+  form: &str,
+  device_types: &[String],
+) -> Result<()> {
+  let module = format!("entry_{form}");
+  let module_json = project_dir.join(format!("{module}/src/main/module.json5"));
+  let content = fs::read_to_string(&module_json)
+    .with_context(|| format!("failed to read {module}/src/main/module.json5"))?;
+  let mut doc: Value =
+    parse_json5(&content).with_context(|| format!("failed to parse {module} module.json5"))?;
+  let module_obj = doc
+    .get_mut("module")
+    .and_then(|m| m.as_object_mut())
+    .with_context(|| format!("{module}/src/main/module.json5 has no 'module' object"))?;
+  module_obj.insert(
+    "deviceTypes".to_string(),
+    Value::Array(
+      device_types
+        .iter()
+        .map(|d| Value::String(d.clone()))
+        .collect(),
+    ),
+  );
+  let updated = serialize_json5(&doc)?;
+  fs::write(&module_json, updated)
+    .with_context(|| format!("failed to write {module}/src/main/module.json5"))?;
+  Ok(())
+}
+
 pub fn update_entry_package(project_dir: &Path, plugins: &[PluginMeta]) -> Result<()> {
-  let oh_package_path = project_dir.join("entry/oh-package.json5");
+  let entry_module = super::active_entry_module();
+  let oh_package_path = project_dir.join(format!("{entry_module}/oh-package.json5"));
 
   log::info!(
-    "Updating entry/oh-package.json5 with {} plugins",
+    "Updating {entry_module}/oh-package.json5 with {} plugins",
     plugins.len()
   );
 
   let content = fs::read_to_string(&oh_package_path)
-    .with_context(|| "failed to read entry/oh-package.json5")?;
+    .with_context(|| format!("failed to read {entry_module}/oh-package.json5"))?;
 
   let mut package: Value =
-    parse_json5(&content).context("failed to parse entry/oh-package.json5")?;
+    parse_json5(&content).context("failed to parse entry oh-package.json5")?;
 
   let dependencies = package
     .get_mut("dependencies")
     .and_then(|v| v.as_object_mut())
-    .with_context(|| "entry/oh-package.json5 has no 'dependencies' object")?;
+    .with_context(|| format!("{entry_module}/oh-package.json5 has no 'dependencies' object"))?;
 
   for plugin in plugins {
     if !dependencies.contains_key(&plugin.identifier) {
@@ -599,9 +714,10 @@ pub fn update_entry_package(project_dir: &Path, plugins: &[PluginMeta]) -> Resul
   }
 
   let updated = serialize_json5(&package)?;
-  fs::write(&oh_package_path, updated).with_context(|| "failed to write entry/oh-package.json5")?;
+  fs::write(&oh_package_path, updated)
+    .with_context(|| format!("failed to write {entry_module}/oh-package.json5"))?;
 
-  log::info!("Successfully updated entry/oh-package.json5");
+  log::info!("Successfully updated {entry_module}/oh-package.json5");
   Ok(())
 }
 
@@ -700,21 +816,23 @@ pub fn validate_plugin_configs(project_dir: &Path, plugins: &[PluginMeta]) -> Re
   let content = fs::read_to_string(&build_profile_path)
     .with_context(|| "failed to read build-profile.json5 for validation")?;
   for plugin in plugins {
-    if !content.contains(&format!("\"name\": \"{}\"", plugin.name)) {
+    let module_name = plugin.name.replace('-', "");
+    if !content.contains(&format!("\"name\": \"{}\"", module_name)) {
       bail!(
-        "Plugin '{}' not found in build-profile.json5 modules",
-        plugin.name
+        "Plugin '{}' (module '{}') not found in build-profile.json5 modules",
+        plugin.name,
+        module_name
       )
     }
   }
 
-  let oh_package_path = project_dir.join("entry/oh-package.json5");
+  let oh_package_path = project_dir.join(format!("{}/oh-package.json5", super::active_entry_module()));
   let content = fs::read_to_string(&oh_package_path)
-    .with_context(|| "failed to read entry/oh-package.json5 for validation")?;
+    .with_context(|| "failed to read entry oh-package.json5 for validation")?;
   for plugin in plugins {
     if !content.contains(&plugin.identifier) {
       bail!(
-        "Plugin '{}' not found in entry/oh-package.json5 dependencies",
+        "Plugin '{}' not found in entry oh-package.json5 dependencies",
         plugin.identifier
       )
     }

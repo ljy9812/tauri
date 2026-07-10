@@ -46,6 +46,8 @@ TaskCreate: "Step 6: Push + 创建 PR"
 | muda | `muda` |
 | tray-icon | `tray-icon` |
 | openharmony-ability | `openharmony-ability` |
+| sentry-tauri | `sentry-tauri` |
+| window-vibrancy | `window-vibrancy` |
 
 对每个仓库执行 `git status --short`，汇总变更情况：
 - 有变更的仓库 → 列出变更文件摘要

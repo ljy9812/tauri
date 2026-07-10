@@ -10,8 +10,9 @@
   import { trayTests } from '../lib/tests/tray';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { getCurrentWindow, currentMonitor } from '@tauri-apps/api/window';
-  import { getCurrentWebview } from '@tauri-apps/api/webview';
+  import { getCurrentWindow, currentMonitor, cursorPosition, Effect } from '@tauri-apps/api/window';
+  import { getCurrentWebview, Webview } from '@tauri-apps/api/webview';
+  import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { appCacheDir, join } from '@tauri-apps/api/path';
   import { flushConsoleLog, clearConsoleLog } from '../lib/console-capture';
 
@@ -33,6 +34,33 @@
   let snapshotWidth = $state(0);
   let snapshotHeight = $state(0);
   let hasSnapshot = $state(false);
+
+  // Key repeat test state
+  let keyTestActive = $state(false);
+  let keyTestLog = $state([]);
+  let pressedKeys = new Set();
+
+  function onKeyTestKeydown(e) {
+    if (!keyTestActive) return;
+    e.preventDefault();
+    const isRepeat = pressedKeys.has(e.code);
+    if (!isRepeat) pressedKeys.add(e.code);
+    const entry = `D key="${e.key}" code=${e.code} repeat=${e.repeat} SetR=${isRepeat} pressed=[${[...pressedKeys].join(',')}]`;
+    keyTestLog = [...keyTestLog.slice(-49), { text: entry, highlight: e.repeat || isRepeat }];
+  }
+
+  function onKeyTestKeyup(e) {
+    if (!keyTestActive) return;
+    e.preventDefault();
+    pressedKeys.delete(e.code);
+    const entry = `U key="${e.key}" code=${e.code} repeat=${e.repeat} SetR=false`;
+    keyTestLog = [...keyTestLog.slice(-49), { text: entry, highlight: false }];
+  }
+
+  function clearKeyTestLog() {
+    keyTestLog = [];
+    pressedKeys.clear();
+  }
 
   const allTests = [...coreTests, ...pluginTests, ...dpiTests, ...windowDpiTests, ...imageTests, ...menuTests, ...trayTests];
   const webview = getCurrentWebview();
@@ -857,6 +885,74 @@ Expected behavior:
     });
   }
 
+  // ─── Vibrancy (Window Effects) Manual Tests (OHOS only) ───
+  // NOTE: WebviewWindow.new defaults to OHOS UIAbility (singleton) which conflicts with the
+  // main window. Use create_transparent_window (Float sub-window) instead so the window
+  // creates successfully and setEffects can apply backdropBlur.
+  async function manualVibrancyEffect(effectName, effect, opts, expect) {
+    await wrapManual(`vibrancy:${effectName}`, async () => {
+      const windowId = `manual-vibrancy-${effectName}`;
+      // Reuse label so repeated clicks refresh the same window (avoid leftover windows)
+      try { await WebviewWindow.getByLabel(windowId)?.then(w => w?.close()); } catch {}
+      await invoke('create_transparent_window', { windowId });
+      const win = await WebviewWindow.getByLabel(windowId);
+      if (!win) throw new Error('vibrancy window not created');
+      await win.setEffects({ effects: [effect], ...opts });
+      manualResult = `Vibrancy ${effectName} window created (id: "${windowId}").\n\n` +
+        `Expected: ${expect}\n\n` +
+        `If matches → PASS.\nIf no blur/effect visible → FAIL.\n\n` +
+        `Close with Ctrl+W or Cmd+W.`;
+      onMessage(manualResult);
+    });
+  }
+
+  async function manualVibrancyBlur() {
+    await manualVibrancyEffect('Blur', Effect.Blur, { radius: 25 },
+      'Window background FROSTED/BLURRY (backdropBlur 25) — content behind is visible but blurred.');
+  }
+  async function manualVibrancyAcrylic() {
+    await manualVibrancyEffect('Acrylic', Effect.Acrylic, { radius: 25, color: [0, 0, 0, 128] },
+      'Window background BLURRY + semi-transparent DARK tint (blur + color overlay).');
+  }
+  async function manualVibrancyTabbedDark() {
+    await manualVibrancyEffect('TabbedDark', Effect.TabbedDark, { radius: 20 },
+      'Window background BLURRY + DARK tint (OHOS approximates MicaDark via blur + dark tint).');
+  }
+
+  async function manualVibrancyClearEffects() {
+    await wrapManual('vibrancy:clearEffects', async () => {
+      const windowId = 'manual-vibrancy-clear';
+      try { await WebviewWindow.getByLabel(windowId)?.then(w => w?.close()); } catch {}
+      await invoke('create_transparent_window', { windowId });
+      const win = await WebviewWindow.getByLabel(windowId);
+      if (!win) throw new Error('vibrancy window not created');
+      await win.setEffects({ effects: [Effect.Blur], radius: 25 });
+      await new Promise((r) => setTimeout(r, 1000));
+      await win.clearEffects();
+      manualResult = `Vibrancy clearEffects window created (id: "${windowId}").\n\n` +
+        `Expected: Window background was BLURRY for 1 second, then became CLEAR/TRANSPARENT after clearEffects.\n\n` +
+        `If blur disappeared after ~1s → PASS.\nIf blur remained → FAIL (clearEffects not working).\n\n` +
+        `Close with Ctrl+W or Cmd+W.`;
+      onMessage(manualResult);
+    });
+  }
+
+  async function manualVibrancyBuildTimeBlur() {
+    await wrapManual('vibrancy:build-time Blur', async () => {
+      const windowId = 'manual-vibrancy-build-blur';
+      try { await WebviewWindow.getByLabel(windowId)?.then(w => w?.close()); } catch {}
+      // create_transparent_window with effect param applies effects at BUILD time
+      // (WindowBuilder::effects → registerController inject), distinct from runtime setEffects.
+      await invoke('create_transparent_window', { windowId, effect: 'Blur', radius: 25 });
+      manualResult = `Build-time Blur window created (id: "${windowId}").\n\n` +
+        `Expected: Window appears with FROSTED/BLURRY background IMMEDIATELY on creation\n` +
+        `(build-time effect via WindowBuilder::effects, not runtime setEffects).\n\n` +
+        `If frosted on appear → PASS.\nIf clear on appear (needs runtime setEffects) → FAIL.\n\n` +
+        `Close with Ctrl+W or Cmd+W.`;
+      onMessage(manualResult);
+    });
+  }
+
   // ─── Process & Updater Manual Tests ───
   async function manualRelaunch() {
     await wrapManual('relaunch', async () => {
@@ -892,6 +988,141 @@ Expected behavior:
         manualResult += '\ndownloadAndInstall() resolved — update downloaded and installed.';
       } catch (e) {
         manualResult += `\ndownloadAndInstall() rejected: ${e}`;
+      }
+      onMessage(manualResult);
+    });
+  }
+
+  // ─── Create PDF Manual Test (OHOS only) ───
+  async function manualCreatePdf() {
+    await wrapManual('createPdf', async () => {
+      let resolvePromise;
+      const resultPromise = new Promise((resolve) => {
+        resolvePromise = resolve;
+      });
+
+      const unlisten = await listen('create-pdf-result', (event) => {
+        unlisten();
+        resolvePromise(event.payload);
+      });
+
+      setTimeout(() => {
+        unlisten();
+        resolvePromise('Timeout: no result within 15s');
+      }, 15000);
+
+      // App sandbox path — only writable location from ArkTS context
+      const desktopPath = '/data/storage/el2/base/cache/test.pdf';
+      await invoke('test_create_pdf', { path: desktopPath });
+      const result = await resultPromise;
+
+      const success = result.startsWith('true:');
+      const path = result.split(':')[1];
+
+      manualResult = `createPdf result: ${success ? 'SUCCESS ✅' : 'FAILED ❌'}\nPath: ${path}\n\n` +
+        `To verify file exists on device:\n` +
+        `hdc shell "ls -la /data/app/el2/100/base/com.tauri.api/cache/test.pdf"\n\n` +
+        `To pull file to local:\n` +
+        `hdc file recv /data/app/el2/100/base/com.tauri.api/cache/test.pdf ./test.pdf`;
+      onMessage(manualResult);
+    });
+  }
+
+  async function manualCreatePdfSquare() {
+    await wrapManual('createPdfSquare', async () => {
+      let resolvePromise;
+      const resultPromise = new Promise((resolve) => {
+        resolvePromise = resolve;
+      });
+
+      const unlisten = await listen('create-pdf-result', (event) => {
+        unlisten();
+        resolvePromise(event.payload);
+      });
+
+      setTimeout(() => {
+        unlisten();
+        resolvePromise('Timeout: no result within 15s');
+      }, 15000);
+
+      const path = '/data/storage/el2/base/cache/test-square.pdf';
+      await invoke('test_create_pdf', {
+        path,
+        config: {
+          width: 8.27,
+          height: 8.27,
+          marginTop: 0,
+          marginBottom: 0,
+          marginLeft: 0,
+          marginRight: 0,
+          shouldPrintBackground: true,
+        },
+      });
+      const result = await resultPromise;
+
+      const success = result.startsWith('true:');
+
+      manualResult = `createPdf (Square 8.27×8.27in) result: ${success ? 'SUCCESS ✅' : 'FAILED ❌'}\nPath: ${path}\n\n` +
+        `Config: width=8.27, height=8.27 (square), no margins, with background\n\n` +
+        `To pull file to local:\n` +
+        `hdc file recv /data/app/el2/100/base/com.tauri.api/cache/test-square.pdf ./test-square.pdf`;
+      onMessage(manualResult);
+    });
+  }
+
+  // ─── Cookie Live Manual Test (OHOS only) ───
+  async function manualCookieLiveTest() {
+    await wrapManual('cookieLive', async () => {
+      await invoke('cookie_manual_test');
+      manualResult = `Set cookie tauri_test_cookie=ManualTest123 for httpbin.org and opened a child window to https://httpbin.org/cookies.
+
+Verify the JSON response contains "tauri_test_cookie": "ManualTest123" (cookie is actually sent to the server).
+Reload the child window to verify the cookie persists.`;
+      onMessage(manualResult);
+    });
+  }
+
+  // ─── DevTools Manual Test (OHOS only, requires devtools feature build) ───
+  async function manualDevtoolsTest() {
+    await wrapManual('devtools', async () => {
+      try {
+        const report = await invoke('devtools_test');
+        if (report.enabled) {
+          const pass = report.after_open === true && report.after_close === false;
+          manualResult = `devtools_test: ${pass ? 'PASS ✅' : 'FAIL ❌'}
+initial=${report.initial}, after_open=${report.after_open}, after_close=${report.after_close}
+(open_devtools → true, close_devtools → false; initial is stateful, see manual_tests 7.3)`;
+        } else {
+          manualResult = `devtools_test: devtools feature not enabled in this build.`;
+        }
+      } catch (e) {
+        manualResult = `devtools_test: devtools feature not enabled in this build (command not available in standard release).`;
+      }
+      onMessage(manualResult);
+    });
+  }
+
+  // ─── DevTools Open (only opens, does not close) ───
+  async function manualDevtoolsOpen() {
+    await wrapManual('devtools_open', async () => {
+      try {
+        await invoke('devtools_open_only');
+        manualResult = `devtools_open: setWebDebuggingAccess(true) called. Domain socket created.\nNow run devtools.bat + open chrome://inspect to connect.`;
+      } catch (e) {
+        manualResult = `devtools_open: devtools feature not enabled in this build.`;
+      }
+      onMessage(manualResult);
+    });
+  }
+
+  // ─── DevTools Close (only closes, disconnects Chrome) ───
+  async function manualDevtoolsClose() {
+    await wrapManual('devtools_close', async () => {
+      try {
+        await invoke('devtools_close_only');
+        manualResult = `devtools_close: setWebDebuggingAccess(false) called. Domain socket destroyed.\nChrome DevTools should be disconnected.`;
+      } catch (e) {
+        manualResult = `devtools_close: devtools feature not enabled in this build.`;
       }
       onMessage(manualResult);
     });
@@ -1034,6 +1265,33 @@ Expected behavior:
       await disable();
       manualResult = 'disable() called.\nOn OHOS: System "App launch management" settings page should open now.\nFind this app and toggle the autostart switch OFF.\nReturn to this app and click "isEnabled" to verify → should return false.';
       onMessage(manualResult);
+    });
+  }
+
+  // ─── Global Shortcut Manual Tests ───
+  let globalShortcutStatus = $state('');
+
+  async function manualGlobalShortcutRegister() {
+    await wrapManual('globalShortcut.register', async () => {
+      const { register, unregister } = await import('@tauri-apps/plugin-global-shortcut');
+      const shortcut = 'CommandOrControl+Shift+T';
+      // Unregister first in case it was left over
+      try { await unregister(shortcut); } catch (_) { /* ignore */ }
+      await register(shortcut, (event) => {
+        globalShortcutStatus = `Triggered! id=${event.id}, state=${event.state}`;
+        console.log(`[global-shortcut] Shortcut triggered: id=${event.id}, state=${event.state}`);
+      });
+      globalShortcutStatus = `Registered: ${shortcut}. Press it on physical keyboard.`;
+      console.log(`[global-shortcut] Registered ${shortcut}. Waiting for key press...`);
+    });
+  }
+
+  async function manualGlobalShortcutUnregister() {
+    await wrapManual('globalShortcut.unregister', async () => {
+      const { unregisterAll } = await import('@tauri-apps/plugin-global-shortcut');
+      await unregisterAll();
+      globalShortcutStatus = 'All shortcuts unregistered.';
+      console.log('[global-shortcut] All shortcuts unregistered');
     });
   }
 
@@ -1193,6 +1451,304 @@ Expected behavior:
       onMessage('on_new_window Deny: no dialog should appear');
     });
   }
+
+  async function manualNewWindowCreate() {
+    await wrapManual('newWindowCreate', async () => {
+      await invoke('set_deny_new_window', { deny: false });
+      await invoke('set_create_new_window', { create: true });
+      window.open('https://example.com/manual-create-test', '_blank');
+      await new Promise((r) => setTimeout(r, 2000));
+      const lastUrl = await invoke('get_last_new_window_url');
+      manualResult = 'Create mode: a real OS window should appear (not a dialog).\n' +
+        `Handler received URL: ${lastUrl || '(null)'}\n` +
+        `Verify:\n` +
+        `  1. A separate OS window appears (not in-page dialog)\n` +
+        `  2. Window has title bar with decorations\n` +
+        `  3. Window loads the target URL\n` +
+        `  4. Window can be moved/resized independently\n` +
+        `  5. Closing the window does not close the main app`;
+      await invoke('set_create_new_window', { create: false });
+      onMessage('on_new_window Create: real OS window should appear');
+    });
+  }
+
+  // ─── Window Focus + Hotkey Zoom Manual Tests ───
+  async function manualWindowFocus() {
+    await wrapManual('windowFocus', async () => {
+      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+      const testWindow = await WebviewWindow.getByLabel('focus-test-window');
+      if (testWindow) {
+        await testWindow.setFocus();
+        manualResult = 'Called setFocus() on existing focus-test-window.\nVerify: window should come to front.';
+      } else {
+        const w = new WebviewWindow('focus-test-window', {
+          url: 'https://example.com/focus-test',
+          title: 'Focus Test Window',
+          width: 600,
+          height: 400,
+        });
+        await new Promise((r) => setTimeout(r, 2000));
+        await w.setFocus();
+        manualResult = 'Created focus-test-window and called setFocus().\nVerify:\n  1. Sub-window appeared\n  2. After setFocus(), sub-window came to front';
+      }
+      onMessage('window focus: sub-window should be focused');
+    });
+  }
+
+  async function manualHotkeyZoom() {
+    await wrapManual('hotkeyZoom', async () => {
+      manualResult = 'Hotkey Zoom Test (OHOS desktop only):\n\n' +
+        '1. Click this test button\n' +
+        '2. Focus the webview area\n' +
+        '3. Press Ctrl + = to zoom in\n' +
+        '4. Press Ctrl + - to zoom out\n\n' +
+        'Verify: page content scales up/down.\n' +
+        'If nothing happens, ArkWeb may not dispatch keydown with ctrlKey.';
+      onMessage('hotkey zoom: follow instructions in result');
+    });
+  }
+
+  // ─── Notification Manual Tests ───
+  async function manualNotificationSend() {
+    await wrapManual('notificationSend', async () => {
+      const { sendNotification, isPermissionGranted } = await import('@tauri-apps/plugin-notification');
+      const granted = await isPermissionGranted();
+      if (!granted) {
+        manualResult = '⚠️ 通知权限未授予。请先点击 "Request Permission" 按钮请求权限。';
+        onMessage(manualResult);
+        return;
+      }
+      sendNotification({ title: 'Tauri 手动测试', body: '如果你在通知中心看到这条消息，测试通过！' });
+      manualResult = '✅ sendNotification() 调用成功。\n' +
+        '验证步骤：\n' +
+        '  1. 点击屏幕右上角系统通知图标\n' +
+        '  2. 确认出现标题为 "Tauri 手动测试" 的通知\n' +
+        '  3. 点击通知，确认通知消失（tapDismissed=true）';
+      onMessage('Notification sent: check notification center');
+    });
+  }
+
+  async function manualNotificationChannel() {
+    await wrapManual('notificationChannel', async () => {
+      const { createChannel, sendNotification, isPermissionGranted, Importance } = await import('@tauri-apps/plugin-notification');
+      const granted = await isPermissionGranted();
+      if (!granted) {
+        manualResult = '⚠️ 通知权限未授予。请先点击 "Request Permission" 按钮。';
+        onMessage(manualResult);
+        return;
+      }
+      await createChannel({ id: 'manual-test-ch', name: '手动测试渠道', importance: Importance.Default });
+      sendNotification({ title: '渠道通知测试', body: '通过 manual-test-ch 渠道发送', channelId: 'manual-test-ch' });
+      manualResult = '✅ createChannel() + sendNotification(channelId) 调用成功。\n' +
+        '验证步骤：\n' +
+        '  1. 打开系统通知中心\n' +
+        '  2. 确认出现标题为 "渠道通知测试" 的通知\n' +
+        '  3. 通知应归属于 SERVICE_INFORMATION 渠道类型（importance=Default）';
+      onMessage('Channel notification sent: check notification center');
+    });
+  }
+
+  async function manualNotificationPermission() {
+    await wrapManual('notificationPermission', async () => {
+      const { requestPermission } = await import('@tauri-apps/plugin-notification');
+      const result = await requestPermission();
+      manualResult = `requestPermission() → "${result}"\n` +
+        '验证步骤：\n' +
+        `  1. ${result === 'granted' ? '✅ 权限已授予，后续调用不再弹窗' : result === 'denied' ? '⚠️ 权限被拒绝，需卸载重装应用才能重新弹窗' : 'ℹ️ 首次请求，系统应弹出权限对话框'}\n` +
+        '  2. 如需重新测试弹窗，执行: hdc shell bm uninstall -n com.tauri.api 后重装';
+      onMessage(`requestPermission → ${result}`);
+    });
+  }
+
+  // ─── Sentry Manual Tests ───
+  async function manualSentryJsError() {
+    await wrapManual('sentryJsError', async () => {
+      try {
+        throw new Error('OHOS test error from examples/api');
+      } catch (e) {
+        console.error('[Sentry Test] Caught error:', e);
+      }
+      manualResult = '✅ JS Error thrown and caught.\n' +
+        'If @sentry/browser is injected, the error should appear in Sentry dashboard.\n' +
+        'Verify:\n' +
+        '  1. Sentry dashboard shows new event with platform=javascript\n' +
+        '  2. Event message contains "OHOS test error from examples/api"\n' +
+        '  3. User-Agent does NOT contain OHOS WebView info\n\n' +
+        'Note: If no event appears, check hilog for sentry debug logs.';
+      onMessage(manualResult);
+    });
+  }
+
+  async function manualSentryRustPanic() {
+    await wrapManual('sentryRustPanic', async () => {
+      manualResult = '⚠️  About to trigger Rust panic!\n' +
+        'The panic handler will catch it and sentry should report it.\n' +
+        'The app may crash after this.\n' +
+        'Verify Sentry dashboard shows a panic event with:\n' +
+        '  message: "sentry test panic from examples/api"\n' +
+        '  Rust backtrace included';
+      onMessage(manualResult);
+      // Small delay so user can read the message
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        await invoke('sentry_test_panic');
+      } catch (e) {
+        const msg = String(e);
+        if (msg.includes('not found') || msg.includes('command')) {
+          // Release build: sentry_test_panic is gated with #[cfg(debug_assertions)]
+          manualResult += '\n\n⚠️ sentry_test_panic not available — only compiled in debug builds.';
+        } else {
+          // Expected: IPC will fail because the thread panicked
+          manualResult += `\n\nPanic triggered. IPC error (expected): ${e}`;
+        }
+        onMessage(manualResult);
+      }
+    });
+  }
+
+  // ─── Unstable Feature Manual Tests ───
+  async function manualReparentError() {
+    await wrapManual('webview.reparent', async () => {
+      const webview = getCurrentWebview();
+      const window = getCurrentWindow();
+      try {
+        await webview.reparent(window);
+        manualResult = 'reparent() returned success — UNEXPECTED ❌ (should error on OHOS)';
+      } catch (e) {
+        manualResult = `reparent() returned error (expected): ${e}\nNo deadlock: PASS ✅`;
+      }
+      onMessage(manualResult);
+    });
+  }
+
+  async function manualReparentCascade() {
+    await wrapManual('reparent cascade check', async () => {
+      const webview = getCurrentWebview();
+      const window = getCurrentWindow();
+      try { await webview.reparent(window); } catch { /* expected */ }
+      const size = await webview.size();
+      const ok = size.width > 0 && size.height > 0;
+      manualResult = `After failed reparent, webview.size() = (${size.width},${size.height})
+Mutex released, no cascade deadlock: ${ok ? 'PASS ✅' : 'FAIL ❌'}`;
+      onMessage(manualResult);
+    });
+  }
+
+  async function manualCreateChildWebview() {
+    await wrapManual('create_webview (multi-webview)', async () => {
+      const window = getCurrentWindow();
+      const label = `test-child-${Date.now()}`;
+      manualResult = 'Creating child webview (300×200 at 50,50)...';
+      onMessage(manualResult);
+
+      const child = new Webview(window, label, {
+        url: 'data:text/html,<html><body style="margin:0;padding:50px;font-family:sans-serif;background:lightgray"><h1>Child Webview</h1></body></html>',
+        x: 50,
+        y: 50,
+        width: 300,
+        height: 200,
+      });
+
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Timeout')), 5000);
+        child.once('tauri://created', () => { clearTimeout(timeout); resolve(); });
+        child.once('tauri://error', (e) => { clearTimeout(timeout); reject(new Error(String(e))); });
+      });
+
+      manualResult = 'Child webview created ✅. Waiting 1s before close...';
+      onMessage(manualResult);
+      await new Promise((r) => setTimeout(r, 1000));
+
+      try {
+        await child.close();
+        manualResult = 'Child webview closed. Check screen: child should be removed.';
+      } catch (e) {
+        manualResult = `Child webview close FAILED: ${e}`;
+      }
+      onMessage(manualResult);
+    });
+  }
+
+  // ─── Mouse Event Manual Tests (OHOS desktop / 2in1) ───
+  let mouseTracking = $state(false);
+  let mouseEvents = $state([]);
+  let mouseTrackArea = $state(null);
+  let mouseUnlisteners = [];
+  let cursorPos = $state('');
+
+  async function manualCursorPosition() {
+    await wrapManual('cursorPosition', async () => {
+      try {
+        const pos = await cursorPosition();
+        cursorPos = `cursorPosition() → (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)})`;
+        manualResult = cursorPos;
+      } catch (e) {
+        cursorPos = `cursorPosition() → ERROR: ${e}`;
+        manualResult = cursorPos;
+      }
+      onMessage(manualResult);
+    });
+  }
+
+  async function toggleMouseTracking() {
+    if (mouseTracking) {
+      mouseUnlisteners.forEach((fn) => fn());
+      mouseUnlisteners = [];
+      mouseTracking = false;
+      const summary = mouseEvents.reduce((acc, e) => {
+        acc[e.type] = (acc[e.type] || 0) + 1;
+        return acc;
+      }, {});
+      manualResult = `Mouse tracking stopped. Events: ${JSON.stringify(summary)}`;
+      onMessage(manualResult);
+    } else {
+      mouseEvents = [];
+      mouseTracking = true;
+
+      const target = mouseTrackArea;
+      if (!target) { manualResult = 'Track area not found'; return; }
+
+      // Remove old listeners first
+      mouseUnlisteners.forEach((fn) => fn());
+      mouseUnlisteners = [];
+
+      const types = ['mousemove', 'mousedown', 'mouseup', 'click', 'contextmenu', 'mouseenter', 'mouseleave', 'wheel'];
+      types.forEach((type) => {
+        const handler = (e) => {
+          let entry;
+          let label;
+          if (type === 'wheel') {
+            const isPinch = e.ctrlKey;
+            entry = {
+              type: isPinch ? 'pinch-zoom' : 'scroll',
+              x: Math.round(e.deltaX),
+              y: Math.round(e.deltaY),
+              button: isPinch ? 'ctrl' : '',
+              ts: Date.now(),
+            };
+            label = isPinch
+              ? `pinch-zoom Δy=${entry.y} (${entry.y < 0 ? 'zoom in' : 'zoom out'})`
+              : `scroll Δx=${entry.x} Δy=${entry.y}`;
+          } else {
+            entry = { type, x: Math.round(e.clientX), y: Math.round(e.clientY), button: e.button, ts: Date.now() };
+            label = `${type} (${entry.x},${entry.y}) btn=${entry.button}`;
+          }
+          mouseEvents = [...mouseEvents.slice(-49), entry];
+          onMessage(`[mouse] ${label}`);
+        };
+        target.addEventListener(type, handler, { passive: true });
+        mouseUnlisteners.push(() => target.removeEventListener(type, handler));
+      });
+
+      manualResult = 'Mouse tracking started. Move mouse over the green area below, click left/right buttons.';
+      onMessage(manualResult);
+    }
+    try {
+      const path = await flushConsoleLog();
+      onMessage(`Console log saved: ${path}`);
+    } catch (e) {}
+  }
+
 </script>
 
 <div class="flex flex-col gap-2">
@@ -1254,22 +1810,50 @@ Expected behavior:
       <button class="btn" onclick={manualOsInfo}>OS Info (platform/type/version)</button>
     </div>
     <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <h5 class="my-1 text-xs text-gray-500">Mouse Events (OHOS desktop / 2in1)</h5>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick={toggleMouseTracking}>
+          {mouseTracking ? 'Stop Mouse Tracking' : 'Start Mouse Tracking'}
+        </button>
+        <button class="btn" onclick={manualCursorPosition}>Get Cursor Position</button>
+      </div>
+      {#if cursorPos}
+        <div class="mt-1 text-xs font-mono text-blue-600">{cursorPos}</div>
+      {/if}
+      <div
+        bind:this={mouseTrackArea}
+        style="width:100%;height:80px;margin-top:8px;background:{mouseTracking ? '#22c55e33' : '#6b728020'};border:2px dashed {mouseTracking ? '#22c55e' : '#6b7280'};border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:{mouseTracking ? 'crosshair' : 'default'};user-select:none;"
+      >
+        <span class="text-xs text-gray-600">
+          {mouseTracking ? '🖱️ Tracking — move / click / scroll / pinch-zoom here' : 'Click "Start Mouse Tracking" then interact here'}
+        </span>
+      </div>
+      {#if mouseEvents.length > 0}
+        <div class="mt-1 text-xs font-mono text-gray-600 dark:text-gray-400 max-h-24 overflow-y-auto">
+          {#each mouseEvents.slice(-10) as e}
+            <div class={e.type === 'pinch-zoom' ? 'text-purple-600 font-bold' : ''}>
+              {e.type} ({e.x},{e.y}) {e.button ? `btn=${e.button}` : ''}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
       <h5 class="my-1 text-xs text-gray-500">Window Decorations & Transparency (Phase 1+2+3)</h5>
       <div class="flex gap-2 flex-wrap">
         <button class="btn" onclick={manualCreateBorderlessWindow}>Create Borderless Window (decorations=false)</button>
         <button class="btn" onclick={manualCreateTransparentBorderlessWindow}>Create Transparent+Borderless</button>
-        <button class="btn" onclick={manualToggleDecorations}>Toggle Decorations (current window)</button>
       </div>
-      <div class="flex gap-2 flex-wrap mt-2">
-        <button class="btn" onclick={() => manualSetBackgroundColor([255, 0, 0, 128], 'semi-transparent red')}>BG: Semi-Red</button>
-        <button class="btn" onclick={() => manualSetBackgroundColor([0, 255, 0, 128], 'semi-transparent green')}>BG: Semi-Green</button>
-        <button class="btn" onclick={() => manualSetBackgroundColor([0, 0, 255, 255], 'opaque blue')}>BG: Opaque Blue</button>
-        <button class="btn" onclick={() => manualSetBackgroundColor([0, 0, 0, 0], 'fully transparent')}>BG: Transparent</button>
-        <button class="btn" onclick={() => manualSetBackgroundColor(null, 'null (reset)')}>BG: Reset</button>
+    </div>
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <h5 class="my-1 text-xs text-gray-500">Vibrancy (Window Effects) — OHOS</h5>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick={manualVibrancyBlur}>vibrancy: Blur effect visible</button>
+        <button class="btn" onclick={manualVibrancyAcrylic}>vibrancy: Acrylic effect visible</button>
+        <button class="btn" onclick={manualVibrancyTabbedDark}>vibrancy: TabbedDark effect visible</button>
+        <button class="btn" onclick={manualVibrancyClearEffects}>vibrancy: clearEffects removes blur</button>
+        <button class="btn" onclick={manualVibrancyBuildTimeBlur}>vibrancy: build-time Blur (WindowBuilder::effects)</button>
       </div>
-      {#if decorationsState !== 'unknown'}
-        <div class="mt-1 text-xs font-mono text-gray-600 dark:text-gray-400">{decorationsState}</div>
-      {/if}
     </div>
     <div class="mt-2 pt-2 border-t-1 border-solid border-code">
       <h5 class="my-1 text-xs text-gray-500">Process & Updater Manual Tests</h5>
@@ -1288,6 +1872,27 @@ Expected behavior:
         <button class="btn" onclick={manualClipboardWriteImagePath}>writeImage(filePath)</button>
         <button class="btn" onclick={manualClipboardWriteImageNumberArray}>writeImage(number[])</button>
         <button class="btn" onclick={manualClipboardWriteImageArrayBuffer}>writeImage(ArrayBuffer)</button>
+      </div>
+    </div>
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <h5 class="my-1 text-xs text-gray-500">webview.createPdf Manual Tests (OHOS only)</h5>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick={manualCreatePdf}>Create PDF A4 (default)</button>
+        <button class="btn" onclick={manualCreatePdfSquare}>Create PDF Square (8.27×8.27)</button>
+      </div>
+    </div>
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <h5 class="my-1 text-xs text-gray-500">webview.cookie Manual Tests (OHOS only)</h5>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick={manualCookieLiveTest}>Cookie Live (httpbin echo)</button>
+      </div>
+    </div>
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <h5 class="my-1 text-xs text-gray-500">webview.devtools Manual Test (OHOS only, needs devtools build)</h5>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick={manualDevtoolsTest}>DevTools (toggle test)</button>
+        <button class="btn" onclick={manualDevtoolsOpen}>DevTools Open</button>
+        <button class="btn" onclick={manualDevtoolsClose}>DevTools Close</button>
       </div>
     </div>
     <div class="mt-2 pt-2 border-t-1 border-solid border-code">
@@ -1359,6 +1964,16 @@ Expected behavior:
       </div>
     </div>
     <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <h5 class="my-1 text-xs text-gray-500">Global Shortcut Manual Tests</h5>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick={manualGlobalShortcutRegister}>Register Ctrl+Shift+T</button>
+        <button class="btn" onclick={manualGlobalShortcutUnregister}>Unregister All</button>
+      </div>
+      {#if globalShortcutStatus}
+        <p class="text-xs mt-1 text-blue-600">{globalShortcutStatus}</p>
+      {/if}
+    </div>
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
       <h5 class="my-1 text-xs text-gray-500">WebView User-Agent Manual Tests</h5>
       <div class="flex gap-2 flex-wrap">
         <button class="btn" onclick={manualUserAgentCustom}>userAgent (custom)</button>
@@ -1371,6 +1986,14 @@ Expected behavior:
       <div class="flex gap-2 flex-wrap">
         <button class="btn" onclick={manualNewWindowAllow}>Allow (dialog with ✕ close)</button>
         <button class="btn" onclick={manualNewWindowDeny}>Deny (no dialog)</button>
+        <button class="btn" onclick={manualNewWindowCreate}>Create (real OS window)</button>
+      </div>
+    </div>
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <h5 class="my-1 text-xs text-gray-500">Window Focus + Hotkey Zoom Manual Tests</h5>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick={manualWindowFocus}>Window Focus (create + focus sub-window)</button>
+        <button class="btn" onclick={manualHotkeyZoom}>Hotkey Zoom (Ctrl+/-)</button>
       </div>
     </div>
     <div class="mt-2 pt-2 border-t-1 border-solid border-code">
@@ -1383,6 +2006,29 @@ Expected behavior:
           <canvas bind:this={canvasEl} width={snapshotWidth} height={snapshotHeight}></canvas>
         </div>
       {/if}
+    </div>
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <h5 class="my-1 text-xs text-gray-500">Notification Manual Tests (视觉确认)</h5>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick={manualNotificationSend}>Send Notification</button>
+        <button class="btn" onclick={manualNotificationChannel}>Send With Channel</button>
+        <button class="btn" onclick={manualNotificationPermission}>Request Permission</button>
+      </div>
+    </div>
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <h5 class="my-1 text-xs text-gray-500">Sentry (错误追踪) Manual Tests</h5>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick={manualSentryJsError}>JS Error Capture</button>
+        <button class="btn" onclick={manualSentryRustPanic}>Rust Panic (may crash)</button>
+      </div>
+    </div>
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <h5 class="my-1 text-xs text-gray-500">Unstable Feature (窗口与 Webview 解耦) Manual Tests</h5>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn" onclick={manualReparentError}>reparent returns error (no deadlock)</button>
+        <button class="btn" onclick={manualReparentCascade}>reparent cascade check</button>
+        <button class="btn" onclick={manualCreateChildWebview}>create_webview (multi-webview)</button>
+      </div>
     </div>
     {#if manualResult}
       <div class="mt-2 p-2 rd-1 bg-black/10 dark:bg-white/10 text-xs font-mono break-all">
@@ -1420,5 +2066,43 @@ Expected behavior:
         </div>
       </div>
     {/if}
+    <div class="mt-2 pt-2 border-t-1 border-solid border-code">
+      <div class="flex items-center gap-2 mb-1">
+        <h5 class="text-xs font-bold">⌨ Key Repeat Detection (OHOS desktop / 2in1)</h5>
+        <button class="btn" onclick={() => { keyTestActive = !keyTestActive; if (!keyTestActive) clearKeyTestLog(); }}>
+          {keyTestActive ? '⏹ Stop' : '▶ Start'}
+        </button>
+        {#if keyTestLog.length > 0}
+          <button class="text-xs text-blue-500 underline" onclick={clearKeyTestLog}>Clear</button>
+        {/if}
+      </div>
+      {#if keyTestActive}
+        <input
+          type="text"
+          class="w-full p-2 mb-1 rd-1 border border-solid border-blue-400 bg-blue-500/5 text-sm outline-none"
+          placeholder="Click here and hold a key to test repeat detection..."
+          onkeydown={onKeyTestKeydown}
+          onkeyup={onKeyTestKeyup}
+          autofocus
+        />
+        <div class="text-xs text-gray-500 mb-1">
+          <code>event.repeat</code> = browser native repeat flag &nbsp;|&nbsp; <code>Set repeat</code> = HashSet-based detection (tao)
+        </div>
+      {/if}
+      {#if keyTestLog.length > 0}
+        <div class="max-h-48 overflow-y-auto flex flex-col gap-0.5">
+          {#each keyTestLog as entry}
+            <div class="text-xs font-mono p-1 rd-1"
+              style="background:{entry.highlight ? 'rgba(34,197,94,0.2)' : 'rgba(0,0,0,0.05)'};{entry.highlight ? 'font-weight:bold;color:#16a34a' : ''}">
+              {entry.text}
+            </div>
+          {/each}
+        </div>
+      {:else if keyTestActive}
+        <div class="text-xs text-gray-500 italic">Waiting for key events...</div>
+      {:else}
+        <div class="text-xs text-gray-500">Press <b>Start</b> to capture keyboard events. Hold a key to test repeat detection.</div>
+      {/if}
+    </div>
   </div>
 </div>

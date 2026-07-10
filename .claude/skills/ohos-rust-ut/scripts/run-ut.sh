@@ -16,7 +16,7 @@ FEATURES="${FEATURES:-}"             # 可选: 启用的 features (e.g. "menu,we
 DEVICE_SN="${DEVICE_SN:-}"
 DEVICE_DIR="${DEVICE_DIR:-/data/local/tmp}"
 TARGET="aarch64-unknown-linux-ohos"
-DEVICE_TYPE="${OHOS_DEVICE_TYPE:-mobile}"
+DEVICE_TYPE="${OHOS_DEVICE_TYPE:-desktop}"
 
 # 位置参数：第一个为 TEST_FILTER
 if [ -n "$1" ] && [[ "$1" != -* ]]; then
