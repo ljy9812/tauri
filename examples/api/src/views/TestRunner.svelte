@@ -85,11 +85,12 @@
 
   // driver blind-invocation + side-effect replay go last by design (S2 coverage suite).
   // Gating: only coverage-verification builds (cov-build.sh with VITE_COVERAGE_TESTS=true) inject the coverage batch;
-  // VITE_AUTOTEST (auto-run tests) does not inject it, so the plain demo keeps the standard 293-case set.
+  // VITE_AUTOTEST (auto-run tests) does not inject it, so the plain demo keeps the standard 310-case set
+  // (310 = all non-coverage batches; ground truth is the generated test-report row count, 2026-10-08 HAD-W32: 305 passed / 5 skipped / 0 failed).
   // The api-gap batch (S10) runs last: it contains destructive ops (app hide/show, settings-page jumps) and must come after all other batches.
   // The risk-supplement batch (2026-09-04) sits after windowOps and before the coverage batch:
   // the three risk-point follow-ups (fs watcher / shell subprocess), skipped on platforms other than OHOS,
-  // appended at the tail to keep the existing #1-#293 numbering stable.
+  // appended at the tail to keep the existing #1-#310 numbering stable.
   // The stronghold batch (2026-09-09) likewise sits before the coverage batch: in-memory operations only
   // (store/procedure chains); snapshot scrypt (~107s per call) belongs to the manual buttons, with numbering stability as above.
   const coverageTests = ['true', '1'].includes(String(import.meta.env.VITE_COVERAGE_TESTS)) ? [...driverTests, ...sideReplayTests, ...badInputTests, ...faultInjectionTests, ...windowOpsExtraTests, ...apiGapTests] : [];
