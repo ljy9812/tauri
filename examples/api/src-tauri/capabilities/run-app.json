@@ -66,7 +66,6 @@
     "allow-dummy-command",
     "allow-get-ohos-version-info",
     "allow-set-deny-new-window",
-    "allow-set-exit-prevention",
     "allow-set-create-new-window",
     "allow-desktop-features-test",
     "allow-get-last-new-window-url",
