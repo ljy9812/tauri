@@ -58,6 +58,7 @@ fn main() {
         "create_ui_ability_window_racy_attrs",
         "create_float_window_racy_attrs",
         "get_current_window_id",
+        "get_device_form",
         "create_ui_ability_windows_x3",
         "create_transparent_ui_ability_window",
         "transparent_test_start",

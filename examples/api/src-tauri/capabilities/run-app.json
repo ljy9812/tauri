@@ -58,6 +58,7 @@
     "allow-create-ui-ability-windows-x3",
     "allow-create-transparent-ui-ability-window",
     "allow-get-current-window-id",
+    "allow-get-device-form",
     "allow-set-ime-position-test",
     "allow-get-ime-position-result",
     "core:window:allow-request-user-attention",

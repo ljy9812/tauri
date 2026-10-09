@@ -85,8 +85,15 @@
 
   // driver blind-invocation + side-effect replay go last by design (S2 coverage suite).
   // Gating: only coverage-verification builds (cov-build.sh with VITE_COVERAGE_TESTS=true) inject the coverage batch;
-  // VITE_AUTOTEST (auto-run tests) does not inject it, so the plain demo keeps the standard 310-case set
-  // (310 = all non-coverage batches; ground truth is the generated test-report row count, 2026-10-08 HAD-W32: 305 passed / 5 skipped / 0 failed).
+  // VITE_AUTOTEST (auto-run tests) does not inject it, so the plain demo keeps the standard 311-case set
+  // (311 = all non-coverage batches; ground truth is the generated test-report row count, 2026-10-08 HAD-W32: 305 passed / 5 skipped / 0 failed).
+  // The suite is authored against the desktop (PC/2in1) form; on an OHOS mobile-form build desktop-only
+  // domains are skipped with a reason via skipOnMobile/desktopOnlySuite (get_device_form command):
+  // menu/tray suites whole (desktop-form features), upstream cfg(desktop) window commands
+  // (maximize/setFullscreen/currentMonitor/decorations/cursor/effects...), cfg(desktop)-gated test
+  // commands, phone-sandbox-denied shell exec, 2in1-only autostart settings URI, and the phone
+  // ArkWeb null-URL new-window gap (2026-10-08 Mate 70 first mobile run: 168 pass / 138 fail / 5 skip
+  // before this gating; the mobile baseline target is 0 fail).
   // The api-gap batch (S10) runs last: it contains destructive ops (app hide/show, settings-page jumps) and must come after all other batches.
   // The risk-supplement batch (2026-09-04) sits after windowOps and before the coverage batch:
   // the three risk-point follow-ups (fs watcher / shell subprocess), skipped on platforms other than OHOS,

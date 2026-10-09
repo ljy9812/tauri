@@ -915,6 +915,8 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
       #[cfg(target_env = "ohos")]
       cmd::get_current_window_id,
       #[cfg(target_env = "ohos")]
+      cmd::get_device_form,
+      #[cfg(target_env = "ohos")]
       cmd::create_ui_ability_windows_x3,
       #[cfg(target_env = "ohos")]
       cmd::create_transparent_ui_ability_window,

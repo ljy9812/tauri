@@ -1,4 +1,4 @@
-import type { TestCase } from '../test-runner';
+import { skipOnMobile, type TestCase } from '../test-runner';
 import { platform } from '@tauri-apps/plugin-os';
 import * as path from '@tauri-apps/api/path';
 import * as fs from '@tauri-apps/plugin-fs';
@@ -76,6 +76,7 @@ export const riskSupplementTests: TestCase[] = [
     category: 'auto',
     timeout: 15000,
     fn: async () => {
+      await skipOnMobile('the phone app sandbox denies exec of system binaries (EACCES os error 13) — /bin/sh exists on device but the mobile-form sandbox policy refuses it; the same case passes on the 2in1 desktop form');
       await requireOhos();
       const out = await Command.create('sh', ['-c', 'echo shell-execute-ok']).execute();
       assert(
@@ -93,6 +94,7 @@ export const riskSupplementTests: TestCase[] = [
     category: 'auto',
     timeout: 20000,
     fn: async () => {
+      await skipOnMobile('the phone app sandbox denies exec of system binaries (EACCES os error 13) — /bin/sh exists on device but the mobile-form sandbox policy refuses it; the same case passes on the 2in1 desktop form');
       await requireOhos();
       const cmd = Command.create('sh', []);
       const stdout: string[] = [];

@@ -1,4 +1,4 @@
-import { skip, type TestCase } from '../test-runner';
+import { skip, skipOnMobile, type TestCase } from '../test-runner';
 
 function assert(condition: boolean, msg: string) {
   if (!condition) throw new Error(msg);
@@ -677,12 +677,17 @@ export const pluginTests: TestCase[] = [
   // placing them last ensures other side-effect tests run first)
   // ⚠️ IMPORTANT: Do NOT add new side-effect tests after this section.
   // These tests MUST remain at the end of the side-effect list because
-  // on OHOS they trigger startAbility() which sends the app to background,
-  // disrupting any subsequent automated test execution.
+  // on OHOS they trigger startAbility() which sends the app to background.
+  // 2026-10-08 Mate 70 forensics: on phone the backgrounded app is
+  // Doze-frozen by the system ~30s later (LifecycleDetectTimeoutProc →
+  // FreezeFreezeUnit) — the whole rest of the suite dies mid-test. The
+  // ArkTS plugin now refuses startAbility on phone form (returns "rejected
+  // the requested operation"), so enable/disable are mobile-skipped below.
   {
     name: '@tauri-apps/plugin-autostart.enable+disable (no throw)',
     category: 'side-effect',
     async fn() {
+      await skipOnMobile('enable()/disable() navigate to the system autostart settings page via startAbility — the pc_app_setup_settings URI is PC/2in1-only. Verified on Mate 70: startAbility LAUNCHES Settings and minimizes the calling UIAbility (MinimizeUIAbilityBySCB), backgrounding the app; the phone resource scheduler then freezes the process ~30s later, killing the rest of the suite. The plugin now refuses before startAbility on phone ("rejected the requested operation"), so the no-throw contract can no longer hold there');
       const { enable, disable, isEnabled } = await import('@tauri-apps/plugin-autostart');
       await enable();
       const enabled = await isEnabled();
@@ -696,6 +701,7 @@ export const pluginTests: TestCase[] = [
     name: '@tauri-apps/plugin-autostart.enable+isEnabled+disable',
     category: 'side-effect',
     async fn() {
+      await skipOnMobile('OHOS forbids programmatic autostart toggling: enable()/disable() only navigate to the system autostart settings page, and that settings URI (pc_app_setup_settings) is PC/2in1-only — on phone the plugin refuses before startAbility and answers "rejected the requested operation" (launching Settings on phone would only background the caller; see the enable+disable skip above for the Mate 70 freeze forensics)');
       const { enable, disable, isEnabled } = await import('@tauri-apps/plugin-autostart');
       await enable();
       const afterEnable = await isEnabled();
@@ -1628,6 +1634,131 @@ export const pluginTests: TestCase[] = [
     async fn() {
       console.log('[single-instance manual] Launch a second instance with the same argv');
       console.log('[single-instance manual] Expect: second instance exits; first receives callback with args/cwd');
+    },
+  },
+
+  // ─── nfc techLists fail-fast + zero residue (plugins#34 round-4/5 fix, on-device verified on Mate 70) ───
+  // NfcBarcode (guest-js TechKind 7) has no readerMode discovery carrier on OHOS, and a
+  // mixed list like [NfcA, NfcBarcode] can never match under AND-within-list semantics.
+  // Both scan() and write() must reject such techLists SYNCHRONOUSLY and leave zero
+  // session residue:
+  //  - pre-fix handleWrite armed pendingWriteInvoke/pendingWriteMessage BEFORE the
+  //    techLists validation, so a rejected write (a) locked every later legitimate
+  //    write behind a misleading 'connected tag not found' error, and (b) made the
+  //    next foreground switch register an UNFILTERED readerMode that would physically
+  //    write the rejected NDEF message to any discovered tag;
+  //  - the quantifier fix (some → length>0 && every) rejects mixed lists that some
+  //    wrongly accepted (those sessions would pend forever).
+  // No physical tag is required: the scenario completes through sync rejects plus one
+  // deliberately-pending legal write that is then cancelled by a follow-up scan
+  // (session replacement), settling every promise it created.
+  {
+    name: 'nfc techLists fail-fast + zero session residue (OHOS)',
+    category: 'auto',
+    // 1s legal-write race + settles + retries fit the 5s default on a healthy
+    // device; 10s absorbs readerMode registration latency on a fresh install.
+    timeout: 10000,
+    async fn() {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const TECH_NFC_A = 5; // guest-js TechKind.NfcA
+      const TECH_NFC_BARCODE = 7; // guest-js TechKind.NfcBarcode — no discovery carrier
+      const BAD_MSG = 'techLists can never match';
+
+      // Needs NFC hardware with NFC switched on (HAD-W32 has none → honest skip).
+      const avail = await invoke<{ available: boolean }>('plugin:nfc|is_available');
+      if (!avail.available) {
+        skip('no NFC hardware or NFC off — techLists scenario needs an NFC-capable device');
+      }
+
+      // Reject-message collector: returns the rejection text, or throws when the
+      // invoke unexpectedly RESOLVES (a regression must not pass silently).
+      const rejectMsg = async (label: string, p: Promise<unknown>): Promise<string> => {
+        try {
+          await p;
+        } catch (e) {
+          return String((e as Error)?.message ?? e);
+        }
+        throw new Error(`${label}: expected a synchronous reject, got resolve`);
+      };
+
+      // ① scan with a Barcode-only techList → sync reject, no pending armed.
+      let msg = await rejectMsg(
+        'scan [[NfcBarcode]]',
+        invoke('plugin:nfc|scan', { kind: { ndef: { techLists: [[TECH_NFC_BARCODE]] } } })
+      );
+      assert(msg.includes(BAD_MSG), `scan [[NfcBarcode]] unexpected reject: ${msg}`);
+
+      // ② scan with a MIXED list [NfcA, NfcBarcode] → must also reject
+      // (AND-within-list demands the barcode too). With the pre-fix `some`
+      // quantifier this list was accepted and the scan pended forever — a
+      // regression therefore surfaces as this test timing out here.
+      msg = await rejectMsg(
+        'scan [[NfcA, NfcBarcode]]',
+        invoke('plugin:nfc|scan', { kind: { ndef: { techLists: [[TECH_NFC_A, TECH_NFC_BARCODE]] } } })
+      );
+      assert(msg.includes(BAD_MSG), `scan [[NfcA, NfcBarcode]] unexpected reject: ${msg}`);
+
+      // Same NDEF text record shape as the manual NFC write button.
+      const enc = new TextEncoder();
+      const payload = Array.from(enc.encode('enTauri OHOS NFC'));
+      payload.unshift('en'.length); // NDEF text record: language-length status byte
+      const record = { format: 1, kind: [0x54], id: [], payload }; // TNF well-known + RTD "T"
+
+      // ③ write with a Barcode-only techList → sync reject BEFORE arming any
+      // session state (guard-before-arming fix).
+      msg = await rejectMsg(
+        'write [[NfcBarcode]]',
+        invoke('plugin:nfc|write', { records: [record], kind: { ndef: { techLists: [[TECH_NFC_BARCODE]] } } })
+      );
+      assert(msg.includes(BAD_MSG), `write [[NfcBarcode]] unexpected reject: ${msg}`);
+
+      // ④ repeat the rejected write — with the pre-fix residue this second
+      // write hit the pending check and failed with the misleading
+      // 'connected tag not found'; zero residue means the same BAD_MSG again.
+      msg = await rejectMsg(
+        'write [[NfcBarcode]] repeat',
+        invoke('plugin:nfc|write', { records: [record], kind: { ndef: { techLists: [[TECH_NFC_BARCODE]] } } })
+      );
+      assert(
+        msg.includes(BAD_MSG) && !msg.includes('connected tag not found'),
+        `rejected write left session residue (later write locked): ${msg}`
+      );
+
+      // ⑤ the lock-free proof (round-4 🔴 scenario A): a LEGAL write after the
+      // rejected ones must get past the pending check — it arms the
+      // scan-then-write session and stays PENDING (no tag nearby) instead of
+      // being rejected with 'connected tag not found'.
+      let legalRejected: string | null = null;
+      const legalWrite = invoke('plugin:nfc|write', { records: [record], kind: { ndef: {} } });
+      legalWrite.catch((e) => {
+        legalRejected = String((e as Error)?.message ?? e);
+      });
+      await new Promise((r) => setTimeout(r, 1000));
+      if (legalRejected !== null) {
+        throw new Error(
+          legalRejected.includes('connected tag not found')
+            ? `legal write locked after rejected writes (round-4 residue bug): ${legalRejected}`
+            : `legal write rejected unexpectedly: ${legalRejected}`
+        );
+      }
+
+      // ⑥ drain: a follow-up scan replaces the session — it fails the pending
+      // legal write ('Write cancelled by a new scan request', settling that
+      // promise) and then rejects itself on the same techLists guard, leaving
+      // no armed session behind.
+      msg = await rejectMsg(
+        'scan [[NfcBarcode]] (drain)',
+        invoke('plugin:nfc|scan', { kind: { ndef: { techLists: [[TECH_NFC_BARCODE]] } } })
+      );
+      assert(msg.includes(BAD_MSG), `drain scan unexpected reject: ${msg}`);
+      await new Promise((r) => setTimeout(r, 300));
+      if (legalRejected === null) {
+        throw new Error('pending legal write was never settled by the session replacement');
+      }
+      assert(
+        legalRejected.includes('cancelled'),
+        `legal write settled with an unexpected error: ${legalRejected}`
+      );
     },
   },
 ];

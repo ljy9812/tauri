@@ -932,6 +932,12 @@ pub fn create_ui_ability_window<R: tauri::Runtime>(
   use tauri::ohos::OHOSWindowKind;
   use tauri::Manager;
 
+  // Same runtime predicate tao's spawn gate uses (window.rs): on a
+  // mobile-form build the gate below rejects the spawn before any pending
+  // state is armed. Reported so autotest can distinguish the by-design
+  // mobile rejection from a real failure.
+  let mobile_form = !openharmony_ability::is_desktop_form();
+
   let mut builder = tauri::WebviewWindowBuilder::new(
     &app,
     &window_id,
@@ -949,7 +955,19 @@ pub fn create_ui_ability_window<R: tauri::Runtime>(
     Ok(w) => w,
     Err(e) => {
       log::error!("create_ui_ability_window build failed: {:?}", e);
-      return Err(e);
+      // Mobile form: this is the desktop-only gate rejecting the spawn
+      // (fail-fast, zero residue). Return a structured marker instead of Err
+      // so autotest records a skip on mobile, while a DESKTOP build failure
+      // still surfaces (webview_acquired=false + mobile_form=false fails the
+      // test's assertion).
+      let mobile_fail_fast = if mobile_form { Some(e.to_string()) } else { None };
+      return Ok(CreateUIAbilityWindowResult {
+        label: window_id.clone(),
+        webview_acquired: false,
+        all_webview_labels: vec![],
+        mobile_form,
+        mobile_fail_fast,
+      });
     }
   };
 
@@ -1034,10 +1052,25 @@ pub fn create_ui_ability_window<R: tauri::Runtime>(
     }
   });
 
+  // tao's desktop-only spawn gate records its rejection under the window
+  // label before returning Err — runtime-wry's `Message::CreateWindow`
+  // dispatch has no reply channel (upstream design: the Err is logged then
+  // dropped), so on mobile `builder.build()` resolves Ok and the manager
+  // registers a label-only zombie window (webview_acquired=true, no OS
+  // window). Consuming the trace here is the only way the API layer sees
+  // the mobile fail-fast; a None on desktop is the normal no-trace path.
+  let mobile_fail_fast = if mobile_form {
+    openharmony_ability::take_ui_ability_spawn_rejection(&window_id)
+  } else {
+    None
+  };
+
   Ok(CreateUIAbilityWindowResult {
     label: window_id.clone(),
     webview_acquired,
     all_webview_labels: all_labels,
+    mobile_form,
+    mobile_fail_fast,
   })
 }
 
@@ -1052,6 +1085,13 @@ pub struct CreateUIAbilityWindowRacyAttrsResult {
   /// The pre-allocated OHOS window id for this spawned instance, for hilog
   /// correlation (0 when the label registry has no entry yet).
   pub ohos_window_id: i64,
+  /// Runtime device-form query — see CreateUIAbilityWindowResult::mobile_form.
+  /// On a mobile-form build the spawn fails fast (desktop-only gate) and
+  /// autotest records a skip instead of running the issue-7 assertions.
+  pub mobile_form: bool,
+  /// Error text when the desktop-only gate rejected the spawn on a
+  /// mobile-form build; None otherwise.
+  pub mobile_fail_fast: Option<String>,
 }
 
 /// Issue-7 reproduction (doc/OHOS窗口遗留问题.md issue 7): creation-time window
@@ -1072,21 +1112,56 @@ pub fn create_ui_ability_window_racy_attrs<R: tauri::Runtime>(
 
   log::info!("Creating UIAbility instance window with racy attrs: {}", window_id);
 
-  let window = tauri::WebviewWindowBuilder::new(
+  // Same runtime predicate tao's spawn gate uses — see the comment in
+  // create_ui_ability_window.
+  let mobile_form = !openharmony_ability::is_desktop_form();
+
+  #[allow(unused_mut)] // `.decorations()` below is cfg(desktop)-only
+  let mut builder = tauri::WebviewWindowBuilder::new(
     &app,
     &window_id,
     WebviewUrl::App("hello.html".into()),
   )
   .title("UIAbility Racy Attrs Window")
   .inner_size(700.0, 500.0)
-  .decorations(false)
   .min_inner_size(400.0, 300.0)
-  .ohos_window_kind(OHOSWindowKind::UIAbility)
-  .build()?;
+  .ohos_window_kind(OHOSWindowKind::UIAbility);
+  // `.decorations()` on the builder is a desktop-only API (cfg(desktop) impl
+  // block in tauri — the first mobile-form build surfaced it). On a mobile
+  // form the spawn is rejected by the desktop-only gate anyway, so the
+  // attribute only matters where it compiles.
+  #[cfg(desktop)]
+  {
+    builder = builder.decorations(false);
+  }
+
+  let window = match builder.build()
+  {
+    Ok(w) => w,
+    Err(e) => {
+      log::error!("create_ui_ability_window_racy_attrs build failed: {:?}", e);
+      // Mobile form: the desktop-only gate rejected the spawn (fail-fast).
+      // Structured marker → autotest skip; desktop failure still fails.
+      let mobile_fail_fast = if mobile_form { Some(e.to_string()) } else { None };
+      return Ok(CreateUIAbilityWindowRacyAttrsResult {
+        label: window_id,
+        webview_acquired: false,
+        ohos_window_id: 0,
+        mobile_form,
+        mobile_fail_fast,
+      });
+    }
+  };
 
   // The generalized form of the race (doc issue 7): a setter fired immediately
-  // after build() hits the same pre-registration window.
+  // after build() hits the same pre-registration window. `set_decorations` is
+  // a desktop-only API (cfg(desktop) impl block in tauri); on a mobile form
+  // the Err arm above already returned (desktop-only gate), so the setter
+  // only runs where it exists.
+  #[cfg(desktop)]
   window.set_decorations(false)?;
+  #[cfg(not(desktop))]
+  let _ = window;
 
   let webview_acquired = app.get_webview_window(&window_id).is_some();
   let ohos_window_id = openharmony_ability::window_id_for_label(&window_id);
@@ -1096,10 +1171,21 @@ pub fn create_ui_ability_window_racy_attrs<R: tauri::Runtime>(
     window_id, webview_acquired, ohos_window_id
   );
 
+  // Consume tao's mobile gate trace — see the comment in
+  // create_ui_ability_window (runtime-wry swallows the gate's Err, so an Ok
+  // build on mobile may still be a rejected spawn: label-only zombie).
+  let mobile_fail_fast = if mobile_form {
+    openharmony_ability::take_ui_ability_spawn_rejection(&window_id)
+  } else {
+    None
+  };
+
   Ok(CreateUIAbilityWindowRacyAttrsResult {
     label: window_id,
     webview_acquired,
     ohos_window_id,
+    mobile_form,
+    mobile_fail_fast,
   })
 }
 
@@ -1136,16 +1222,23 @@ pub fn create_float_window_racy_attrs<R: tauri::Runtime>(
 
   log::info!("Creating Float window with racy attrs: {}", window_id);
 
-  let window = tauri::WebviewWindowBuilder::new(
+  #[allow(unused_mut)] // `.decorations()` below is cfg(desktop)-only
+  let mut builder = tauri::WebviewWindowBuilder::new(
     &app,
     &window_id,
     WebviewUrl::App("hello.html".into()),
   )
   .title("Float Racy Attrs Window")
   .inner_size(500.0, 400.0)
-  .decorations(false)
-  .ohos_window_kind(OHOSWindowKind::Float)
-  .build()?;
+  .ohos_window_kind(OHOSWindowKind::Float);
+  // `.decorations()` on the builder is a desktop-only API (see the UIAbility
+  // racy command above); FloatPage renders its own chrome either way.
+  #[cfg(desktop)]
+  {
+    builder = builder.decorations(false);
+  }
+
+  let window = builder.build()?;
 
   // The generalized form of the race: a setter fired immediately after
   // build() hits the same pre-registration window. Dispatched from the Rust
@@ -1180,6 +1273,13 @@ pub struct CreateTransparentWindowResult {
   pub webview_acquired: bool,
   /// All webview labels currently registered in the manager.
   pub all_webview_labels: Vec<String>,
+  /// Runtime device-form query — see CreateUIAbilityWindowResult::mobile_form.
+  /// On a mobile-form build the spawn fails fast (desktop-only gate) and
+  /// autotest records a skip instead of the acquired assertion.
+  pub mobile_form: bool,
+  /// Error text when the desktop-only gate rejected the spawn on a
+  /// mobile-form build; None otherwise.
+  pub mobile_fail_fast: Option<String>,
 }
 
 /// Create a UIAbility instance with a transparent main window (builder.transparent(true))
@@ -1210,7 +1310,11 @@ pub fn create_transparent_ui_ability_window<R: tauri::Runtime>(
   use tauri::ohos::OHOSWindowKind;
   use tauri::Manager;
 
-  let _window = tauri::WebviewWindowBuilder::new(
+  // Same runtime predicate tao's spawn gate uses — see the comment in
+  // create_ui_ability_window.
+  let mobile_form = !openharmony_ability::is_desktop_form();
+
+  let _window = match tauri::WebviewWindowBuilder::new(
     &app,
     &label,
     WebviewUrl::App("transparent-test.html".into()),
@@ -1219,7 +1323,24 @@ pub fn create_transparent_ui_ability_window<R: tauri::Runtime>(
   .transparent(true)
   .inner_size(800.0, 600.0)
   .ohos_window_kind(OHOSWindowKind::UIAbility)
-  .build()?;
+  .build()
+  {
+    Ok(w) => w,
+    Err(e) => {
+      log::error!("create_transparent_ui_ability_window build failed: {:?}", e);
+      // Mobile form: the desktop-only gate rejected the spawn (fail-fast).
+      // Structured marker → autotest skip; desktop failure still fails.
+      let mobile_fail_fast = if mobile_form { Some(e.to_string()) } else { None };
+      return Ok(CreateTransparentWindowResult {
+        label,
+        window_id,
+        webview_acquired: false,
+        all_webview_labels: vec![],
+        mobile_form,
+        mobile_fail_fast,
+      });
+    }
+  };
 
   let acquired = app.get_webview_window(&label).is_some();
   let all_labels: Vec<String> = app.webview_windows().keys().cloned().collect();
@@ -1229,11 +1350,22 @@ pub fn create_transparent_ui_ability_window<R: tauri::Runtime>(
     acquired
   );
 
+  // Consume tao's mobile gate trace — see the comment in
+  // create_ui_ability_window (runtime-wry swallows the gate's Err, so an Ok
+  // build on mobile may still be a rejected spawn: label-only zombie).
+  let mobile_fail_fast = if mobile_form {
+    openharmony_ability::take_ui_ability_spawn_rejection(&label)
+  } else {
+    None
+  };
+
   Ok(CreateTransparentWindowResult {
     label,
     window_id,
     webview_acquired: acquired,
     all_webview_labels: all_labels,
+    mobile_form,
+    mobile_fail_fast,
   })
 }
 
@@ -1243,6 +1375,29 @@ pub fn create_transparent_ui_ability_window<R: tauri::Runtime>(
 pub fn transparent_test_start(window_id: String) -> tauri::Result<()> {
   log::info!("[TRANSP-TEST] START window_id={}", window_id);
   Ok(())
+}
+
+/// Runtime device-form query — the same predicate tao's UIAbility spawn gate
+/// and the cmd.rs mobile_fail_fast markers use
+/// (`openharmony_ability::is_desktop_form`, compiled per OHOS_DEVICE_TYPE).
+/// Autotest calls this once at suite start to skip desktop-only cases on a
+/// mobile-form build (menu/tray are desktop-form features — lib.rs only
+/// initialises them under cfg(desktop); many core window commands are
+/// upstream cfg(desktop) and absent from the mobile .so, where each invoke
+/// would fail with "Plugin not found: window") instead of letting them
+/// surface as false failures on the mobile baseline.
+#[cfg(target_env = "ohos")]
+#[derive(serde::Serialize)]
+pub struct DeviceFormResult {
+  pub mobile_form: bool,
+}
+
+#[cfg(target_env = "ohos")]
+#[command]
+pub fn get_device_form() -> tauri::Result<DeviceFormResult> {
+  let mobile_form = !openharmony_ability::is_desktop_form();
+  log::info!("[get_device_form] mobile_form={}", mobile_form);
+  Ok(DeviceFormResult { mobile_form })
 }
 
 /// Test hook (openspec multi-uiability-windows test-plan §3): returns the calling
@@ -1277,6 +1432,17 @@ pub struct CreateUIAbilityWindowResult {
   pub webview_acquired: bool,
   /// All webview labels currently registered in the manager.
   pub all_webview_labels: Vec<String>,
+  /// Runtime device-form query (`openharmony_ability::is_desktop_form`):
+  /// true on a mobile-form build, where spawning additional UIAbility windows
+  /// is desktop-only by design (multi-uiability-windows OQ1) and tao rejects
+  /// the creation up front (fail-fast) instead of leaving a forever-pending
+  /// instance. Lets tests tell the expected mobile rejection (skip) apart
+  /// from a desktop failure or a mobile gate regression (both fail loudly).
+  pub mobile_form: bool,
+  /// Error text when tao rejected the spawn on a mobile-form build (the
+  /// desktop-only gate). None on desktop, and None on a mobile-form build
+  /// whose spawn unexpectedly SUCCEEDED (gate regression — test must fail).
+  pub mobile_fail_fast: Option<String>,
 }
 
 /// Test command: create 3 UIAbility instance windows in sequence, returning
@@ -1290,6 +1456,10 @@ pub fn create_ui_ability_windows_x3<R: tauri::Runtime>(
 ) -> tauri::Result<Vec<CreateUIAbilityWindowResult>> {
   use tauri::ohos::OHOSWindowKind;
   use tauri::Manager;
+
+  // Same runtime predicate tao's spawn gate uses — see the comment in
+  // create_ui_ability_window.
+  let mobile_form = !openharmony_ability::is_desktop_form();
 
   let mut results = Vec::new();
   for i in 1..=3 {
@@ -1327,18 +1497,35 @@ pub fn create_ui_ability_windows_x3<R: tauri::Runtime>(
           log::error!("[x3] #{} eval (IPC trigger) failed: {:?}", i, e);
         }
 
+        // Consume tao's mobile gate trace — see the comment in
+        // create_ui_ability_window (runtime-wry swallows the gate's Err, so
+        // an Ok build on mobile may still be a rejected spawn).
+        let mobile_fail_fast = if mobile_form {
+          openharmony_ability::take_ui_ability_spawn_rejection(&window_id)
+        } else {
+          None
+        };
+
         results.push(CreateUIAbilityWindowResult {
           label: window_id,
           webview_acquired: acquired,
           all_webview_labels: all_labels,
+          mobile_form,
+          mobile_fail_fast,
         });
       }
       Err(e) => {
         log::error!("[x3] #{} build failed: {:?}", i, e);
+        // Same structured-marker contract as create_ui_ability_window: a
+        // mobile-form build fails fast at the desktop-only gate (skip in
+        // autotest); desktop failures surface as webview_acquired=false.
+        let mobile_fail_fast = if mobile_form { Some(e.to_string()) } else { None };
         results.push(CreateUIAbilityWindowResult {
           label: window_id,
           webview_acquired: false,
           all_webview_labels: vec![],
+          mobile_form,
+          mobile_fail_fast,
         });
       }
     }

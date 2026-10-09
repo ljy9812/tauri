@@ -40,6 +40,66 @@ export function skip(reason: string): never {
   throw new Error(`skip: ${reason}`);
 }
 
+// ─── OHOS device-form gating (mobile baseline) ──────────────────────────────
+//
+// The suite is authored against the desktop (PC/2in1) form. On an OHOS
+// mobile-form build whole feature domains are absent BY DESIGN:
+//   - menu/tray: lib.rs initialises them only under cfg(desktop) → every
+//     plugin:menu| / plugin:tray| invoke fails ("plugin menu not found");
+//   - many core window commands (maximize, setFullscreen, currentMonitor,
+//     decorations, cursor, effects...) are upstream cfg(desktop) and are
+//     not compiled into the mobile .so — each invoke fails with
+//     "Plugin not found: window" after the ArkTS fallback also misses.
+// Instead of surfacing these as failures on the mobile baseline, cases
+// declare themselves desktop-only and are skipped with a reason.
+
+let cachedMobileForm: boolean | null = null;
+
+/**
+ * Whether this app runs as the OHOS mobile form (phone/tablet). Asks the
+ * Rust side once (`get_device_form` — the same predicate tao's UIAbility
+ * spawn gate uses) and caches it. Non-OHOS platforms (no command) default
+ * to false (desktop semantics), matching how the suite ran before this
+ * gate existed.
+ */
+export async function isMobileForm(): Promise<boolean> {
+  if (cachedMobileForm === null) {
+    try {
+      cachedMobileForm = (
+        await invoke<{ mobile_form: boolean }>('get_device_form')
+      ).mobile_form;
+    } catch {
+      cachedMobileForm = false;
+    }
+  }
+  return cachedMobileForm;
+}
+
+/**
+ * Skip the current test when running on an OHOS mobile-form build.
+ * Use at the top of a desktop-only test's fn().
+ */
+export async function skipOnMobile(reason: string): Promise<void> {
+  if (await isMobileForm()) {
+    skip(`desktop-only on OHOS mobile form — ${reason}`);
+  }
+}
+
+/**
+ * Wrap a whole desktop-only suite: every case is skipped on an OHOS
+ * mobile-form build. Use for feature domains that are desktop-form by
+ * design (menu, tray) so future cases inherit the skip automatically.
+ */
+export function desktopOnlySuite(tests: TestCase[], feature: string): TestCase[] {
+  return tests.map((t) => ({
+    ...t,
+    async fn() {
+      await skipOnMobile(`${feature} is a desktop-form feature (not initialised on mobile builds)`);
+      return t.fn();
+    },
+  }));
+}
+
 const TEST_TIMEOUT_MS = 5000;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

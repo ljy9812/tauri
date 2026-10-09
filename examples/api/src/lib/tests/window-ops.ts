@@ -1,6 +1,24 @@
-import type { TestCase } from '../test-runner';
+import { skip, skipOnMobile, type TestCase } from '../test-runner';
 import { getCurrentWindow, currentMonitor, Window } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
+
+/**
+ * Shared handling for the UIAbility-spawn tests: on a mobile-form build the
+ * spawn is rejected up front by tao's desktop-only gate (fail-fast instead of
+ * a forever-pending instance — multi-uiability-windows OQ1 keeps the mobile
+ * entry singleton). The command reports `mobile_form` + `mobile_fail_fast`
+ * so this records a skip; a desktop failure or a mobile-form build whose
+ * spawn unexpectedly succeeded (gate regression) fails loudly.
+ */
+function handleMobileFailFast(r: { mobile_form: boolean; mobile_fail_fast: string | null }): void {
+  if (!r.mobile_form) return;
+  assert(
+    r.mobile_fail_fast !== null,
+    'mobile-form build let the UIAbility spawn through (desktop-only gate regressed): ' +
+      JSON.stringify(r)
+  );
+  skip(`UIAbility spawn fail-fast on mobile form (desktop-only, tao gate): ${r.mobile_fail_fast}`);
+}
 
 function assert(condition: boolean, msg: string) {
   if (!condition) throw new Error(msg);
@@ -58,7 +76,17 @@ async function readBackEquals(
 /// early exit; the tradeoff is it also skips when the PC window is maximized).
 async function mainWindowResizable(): Promise<boolean> {
   const win = getCurrentWindow();
-  const mon = await currentMonitor();
+  // currentMonitor is upstream cfg(desktop): on an OHOS mobile-form build the
+  // invoke rejects ("Plugin not found: window"). Treat that as "no monitor
+  // info" — the same optimistic branch as a null monitor on desktop — so the
+  // setInnerSize cases themselves (setSize IS compiled for mobile) still run
+  // and grow the mobile baseline instead of being skipped.
+  let mon: Awaited<ReturnType<typeof currentMonitor>> = null;
+  try {
+    mon = await currentMonitor();
+  } catch {
+    mon = null;
+  }
   if (!mon) return true; // no monitor info: optimistically assume resizable
   const outer = await win.outerSize();
   return !(outer.width >= mon.size.width * 0.95 && outer.height >= mon.size.height * 0.95);
@@ -77,6 +105,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window.setFullscreen diag (main window)',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the isFullscreen/setFullscreen window commands are upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       const diag: string[] = [];
       const log = (s: string) => { diag.push(s); console.log('[diag-fs]', s); };
@@ -117,7 +146,12 @@ export const windowOpsTests: TestCase[] = [
         label: string;
         webview_acquired: boolean;
         all_webview_labels: string[];
+        mobile_form: boolean;
+        mobile_fail_fast: string | null;
       }>('create_ui_ability_window', { windowId: label });
+
+      // Mobile form: desktop-only gate rejected the spawn → recorded skip.
+      handleMobileFailFast(result);
 
       assert(
         result.webview_acquired === true,
@@ -152,7 +186,12 @@ export const windowOpsTests: TestCase[] = [
         label: string;
         webview_acquired: boolean;
         ohos_window_id: number;
+        mobile_form: boolean;
+        mobile_fail_fast: string | null;
       }>('create_ui_ability_window_racy_attrs', { windowId: label });
+      // Mobile form: desktop-only gate rejected the spawn → recorded skip
+      // (the issue-7 racy-attrs assertions are desktop-only semantics).
+      handleMobileFailFast(result);
       assert(
         result.webview_acquired === true,
         `webview not acquired: ${JSON.stringify(result)}`
@@ -272,6 +311,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window.setInnerSize actually resizes (main window)',
     category: 'auto',
     async fn() {
+      await skipOnMobile('phone main window is full-screen: resize-inner cannot land (tao warns "precise decor unavailable" — Mate 70 r5-live.log ×10) — the exact-readback acceptance of issue#97 needs freeform resize, a PC/2in1 capability; the generic setSize path stays covered by the earlier window.set_size case');
       if (!(await mainWindowResizable())) return;
       const { PhysicalSize, LogicalSize } = await import('@tauri-apps/api/dpi');
       const win = getCurrentWindow();
@@ -328,6 +368,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window.setInnerSize save/restore zero drift (5 rounds)',
     category: 'auto',
     async fn() {
+      await skipOnMobile('phone main window is full-screen: resize-inner cannot land (tao warns "precise decor unavailable") — the zero-drift read-back loop of issue#97 needs freeform resize, a PC/2in1 capability');
       if (!(await mainWindowResizable())) return;
       const { PhysicalSize, LogicalSize } = await import('@tauri-apps/api/dpi');
       const win = getCurrentWindow();
@@ -370,6 +411,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'float window setInnerSize exact readback (decor=0)',
     category: 'auto',
     async fn() {
+      await skipOnMobile('create_borderless_window (the Float-window creator used here) is cfg(desktop)-gated in cmd.rs since e2fb524c7 — Float windows work on mobile, but this creator command is desktop-only');
       const { PhysicalSize } = await import('@tauri-apps/api/dpi');
       const w = await createFloatWindow('test-size-' + Date.now());
       await w.setSize(new PhysicalSize(760, 1100));
@@ -411,6 +453,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window.maximize fills monitor',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the maximize window command is upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       const mon = await currentMonitor();
       const before = await win.innerSize();
@@ -446,6 +489,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window.setFullscreen smoke (effect unverifiable from JS)',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the setFullscreen window command is upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       await smoke(() => win.setFullscreen(true), 'setFullscreen(true)');
       await delay(400);
@@ -457,6 +501,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window.minimize smoke (effect unverifiable from JS)',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the minimize window command is upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       await smoke(() => win.minimize(), 'minimize');
       await delay(400);
@@ -468,6 +513,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window.setAlwaysOnTop smoke (OHOS partial: flag only, no z-order API)',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the setAlwaysOnTop window command is upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       // isAlwaysOnTop only reads tao's AtomicBool, so the round-trip is self-proving and not asserted.
       await smoke(() => win.setAlwaysOnTop(true), 'setAlwaysOnTop(true)');
@@ -478,6 +524,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window.setIgnoreCursorEvents smoke',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the setIgnoreCursorEvents window command is upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       await smoke(() => win.setIgnoreCursorEvents(true), 'setIgnoreCursorEvents(true)');
       await smoke(() => win.setIgnoreCursorEvents(false), 'setIgnoreCursorEvents(false)');
@@ -487,6 +534,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window decoration flags smoke (D group, main window no-op)',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the setClosable/setMaximizable/setMinimizable window commands are upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       // setDecorationFlags is a no-op on the main window; is*() only reads tao's bitfield, so the round-trip is self-proving.
       // Only verify the call does not throw. Effects are verified manually on a Float sub-window.
@@ -514,6 +562,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window Float kind-branch ops (D11: decorations/flags/minimize/show)',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the branch ops exercised here (setDecorations/minimize/decoration flags) are upstream cfg(desktop) window commands absent from the mobile build');
       const label = 'test-float-' + Date.now();
       await invoke('create_decorated_window', { windowId: label });
       await delay(600);
@@ -569,6 +618,7 @@ export const windowOpsTests: TestCase[] = [
     name: 'window cursor smoke (E group, no getter)',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the setCursorVisible/setCursorIcon/setCursorPosition window commands are upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       await smoke(() => win.setCursorVisible(false), 'setCursorVisible(false)');
       await smoke(() => win.setCursorVisible(true), 'setCursorVisible(true)');

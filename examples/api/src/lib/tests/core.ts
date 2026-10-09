@@ -1,4 +1,4 @@
-import type { TestCase } from '../test-runner';
+import { skip, skipOnMobile, type TestCase } from '../test-runner';
 import { invoke, Channel, Resource } from '@tauri-apps/api/core';
 import { emit, listen, once } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
@@ -156,6 +156,7 @@ export const coreTests: TestCase[] = [
     name: '@tauri-apps/api/window.currentMonitor',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the currentMonitor window command is upstream cfg(desktop) and absent from the mobile build');
       const monitor = await currentMonitor();
       assert(monitor !== null && monitor !== undefined, 'currentMonitor returned null (device should always have a display)');
       assert(typeof monitor.size.width === 'number' && monitor.size.width > 0, `monitor.size.width should be positive, got ${monitor.size.width}`);
@@ -708,6 +709,7 @@ export const coreTests: TestCase[] = [
     name: 'window.isDecorated returns boolean',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the isDecorated window command is upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       const decorated = await win.isDecorated();
       assert(typeof decorated === 'boolean', `isDecorated() should return boolean, got ${typeof decorated}`);
@@ -717,6 +719,7 @@ export const coreTests: TestCase[] = [
     name: 'window.setDecorations toggles decorations state',
     category: 'side-effect',
     async fn() {
+      await skipOnMobile('the setDecorations window command is upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       // Save original state
       const original = await win.isDecorated();
@@ -738,6 +741,7 @@ export const coreTests: TestCase[] = [
     name: 'create_borderless_window command',
     category: 'side-effect',
     async fn() {
+      await skipOnMobile('the create_borderless_window command is cfg(desktop)-only in cmd.rs');
       const windowId = 'test-borderless-' + Date.now();
       await invoke('create_borderless_window', { windowId });
       // Wait for window to be created
@@ -757,6 +761,7 @@ export const coreTests: TestCase[] = [
     name: 'create_transparent_borderless_window command',
     category: 'side-effect',
     async fn() {
+      await skipOnMobile('the create_transparent_borderless_window command is cfg(desktop)-only in cmd.rs');
       const windowId = 'test-transparent-borderless-' + Date.now();
       await invoke('create_transparent_borderless_window', { windowId });
       // Wait for window to be created
@@ -777,6 +782,7 @@ export const coreTests: TestCase[] = [
     name: 'window.is_maximized returns boolean',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the isMaximized window command is upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       const maximized = await win.isMaximized();
       assert(typeof maximized === 'boolean', `isMaximized() should return boolean, got ${typeof maximized}`);
@@ -786,6 +792,7 @@ export const coreTests: TestCase[] = [
     name: 'window.is_minimized returns boolean',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the isMinimized window command is upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       const minimized = await win.isMinimized();
       assert(typeof minimized === 'boolean', `isMinimized() should return boolean, got ${typeof minimized}`);
@@ -796,6 +803,7 @@ export const coreTests: TestCase[] = [
     name: 'window.maximize then is_maximized reflects state',
     category: 'side-effect',
     async fn() {
+      await skipOnMobile('the maximize/unmaximize window commands are upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       await win.maximize();
       await new Promise((r) => setTimeout(r, 500));
@@ -807,6 +815,7 @@ export const coreTests: TestCase[] = [
     name: 'window.unmaximize (recover) then is_maximized reflects state',
     category: 'side-effect',
     async fn() {
+      await skipOnMobile('the maximize/unmaximize window commands are upstream cfg(desktop) and absent from the mobile build');
       const win = getCurrentWindow();
       await win.maximize();
       await new Promise((r) => setTimeout(r, 500));
@@ -918,6 +927,7 @@ export const coreTests: TestCase[] = [
     name: 'on_new_window: Deny blocks window.open()',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the phone ArkWeb native layer returns a null URL for window.open (nweb_handler_delegate native return nullptr), so the event URL is null on mobile — known platform gap');
       // Set handler to Deny mode
       await invoke('set_deny_new_window', { deny: true });
       // Attempt to open a new window
@@ -938,6 +948,7 @@ export const coreTests: TestCase[] = [
     name: 'on_new_window: window.open triggers event with correct URL',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the phone ArkWeb native layer returns a null URL for window.open (nweb_handler_delegate native return nullptr), so the event URL is null on mobile — known platform gap');
       // The `new-window-requested` event is emitted unconditionally in the
       // OHOS handler (lib.rs) BEFORE the Allow/Create/Deny decision, so it fires
       // regardless of mode. We use Create mode (create=true) here rather than
@@ -1330,6 +1341,7 @@ export const coreTests: TestCase[] = [
     name: '@tauri-apps/api/window.cursorPosition',
     category: 'auto',
     async fn() {
+      await skipOnMobile('the cursorPosition window command is upstream cfg(desktop) and absent from the mobile build');
       const pos = await cursorPosition();
       assert(typeof pos.x === 'number', `pos.x should be number, got ${typeof pos.x}`);
       assert(typeof pos.y === 'number', `pos.y should be number, got ${typeof pos.y}`);
@@ -1537,6 +1549,7 @@ export const coreTests: TestCase[] = [
     name: 'window.setEffects (Blur/Acrylic) — no throw',
     category: 'side-effect',
     async fn() {
+      await skipOnMobile('the setEffects window command is upstream cfg(desktop) and absent from the mobile build');
       const windowId = 'test-vibrancy-auto-' + Date.now();
       await invoke('create_transparent_window', { windowId });
       const win = await WebviewWindow.getByLabel(windowId);
@@ -1613,9 +1626,26 @@ export const coreTests: TestCase[] = [
       const windowId = 'autotest-' + Date.now();
       const diag = await invoke<{
         label: string;
+        window_id: string;
         webview_acquired: boolean;
         all_webview_labels: string[];
+        mobile_form: boolean;
+        mobile_fail_fast: string | null;
       }>('create_transparent_ui_ability_window', { windowId });
+
+      // Mobile form: the desktop-only gate rejects additional UIAbility
+      // windows (multi-uiability-windows OQ1 keeps the mobile entry
+      // singleton) — the command reports the fail-fast marker and this
+      // records a skip. A mobile-form build whose spawn SUCCEEDED (gate
+      // regression) or a desktop failure fails loudly below.
+      if (diag.mobile_form) {
+        if (diag.mobile_fail_fast === null) {
+          throw new Error(
+            `mobile-form build let the transparent UIAbility spawn through (desktop-only gate regressed): ${JSON.stringify(diag)}`
+          );
+        }
+        skip(`UIAbility spawn fail-fast on mobile form (desktop-only, tao gate): ${diag.mobile_fail_fast}`);
+      }
 
       assert(
         diag.webview_acquired === true,
