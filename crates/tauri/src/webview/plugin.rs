@@ -73,12 +73,21 @@ mod commands {
 
   /// Reloads the webview's current page.
   ///
-  /// OHOS-only registration: the wry OHOS backend routes this through ArkWeb's
-  /// `WebviewController.refresh` (WebviewPlugin.ets `reload` action, dispatch
-  /// via `PendingOp::Reload`). Keeping the command out of
-  /// `desktop_commands` leaves the desktop command surface unchanged from
-  /// upstream.
-  #[cfg(target_env = "ohos")]
+  /// Registered on desktop and OHOS — the same surface shape as
+  /// `set_webview_background_color`: every wry desktop backend implements
+  /// `reload` (webview2 / wkwebview / webkitgtk), so the JS API's
+  /// unconditional method works everywhere it is backed; Android/iOS keep
+  /// the unregistered-command error, matching how `set_webview_zoom` (a
+  /// desktop command with an unconditional JS method) behaves on mobile
+  /// upstream. OHOS routes through ArkWeb's `WebviewController.refresh`
+  /// (WebviewPlugin.ets `reload` action, dispatch via `PendingOp::Reload`).
+  ///
+  /// Upstream note: tauri-apps/tauri v2 has no JS `Webview.reload` and no
+  /// reload command at all — only the Rust `Webview::reload` method (PR
+  /// #12818). Both this command and the `packages/api` method are fork
+  /// extensions; if upstream later adds them under the same name, a rebase
+  /// will collide and the two surfaces must be reconciled then.
+  #[cfg(any(desktop, target_env = "ohos"))]
   #[command(root = "crate")]
   pub async fn webview_reload<R: Runtime>(
     webview: Webview<R>,
@@ -289,7 +298,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
       #[cfg(desktop)] desktop_commands::set_webview_auto_resize,
       #[cfg(any(desktop, target_env = "ohos"))]
       commands::set_webview_background_color,
-      #[cfg(target_env = "ohos")]
+      #[cfg(any(desktop, target_env = "ohos"))]
       commands::webview_reload,
       #[cfg(desktop)] desktop_commands::set_webview_zoom,
       #[cfg(desktop)] desktop_commands::webview_hide,

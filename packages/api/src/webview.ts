@@ -581,14 +581,18 @@ class Webview {
    * await getCurrentWebview().reload();
    * ```
    *
-   * #### Platfrom-specific:
+   * #### Platform-specific:
    *
    * - **OpenHarmony**: Routed through ArkWeb's `WebviewController.refresh`.
-   *   The command is only registered on OHOS targets.
+   * - **Android / iOS**: The command is not registered on mobile targets —
+   *   the call fails with a "command not found" error (the same registration
+   *   shape as `setZoom`, which is desktop-only at the command layer).
+   *
+   * Fork extension: upstream tauri v2 has no JS `Webview.reload` (only the
+   * Rust `Webview::reload` method), so this method has no upstream version
+   * lineage.
    *
    * @returns A promise indicating the success or failure of the operation.
-   *
-   * @since 2.1.0
    */
   async reload(): Promise<void> {
     // `label` for cross-webview routing — same rationale as
@@ -640,7 +644,7 @@ class Webview {
   /**
    * Specify the webview background color.
    *
-   * #### Platfrom-specific:
+   * #### Platform-specific:
    *
    * - **macOS / iOS**: Not implemented.
    * - **Windows**:

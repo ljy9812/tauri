@@ -45,11 +45,14 @@ pub trait WindowExt {
   ///
   /// ## Platform-specific:
   ///
-  /// - **Android / iOS**: Unsupported.
-  /// - **OpenHarmony**: Computes the work-area center of the window's current
-  ///   monitor (first available monitor as fallback) and moves the window
-  ///   there via `set_outer_position` — the same geometry the shared
-  ///   `#[cfg(desktop)]` creation-time `.center()` block computes.
+  /// - **Android / iOS / OpenHarmony mobile form**: Unsupported (trait
+  ///   default no-op).
+  /// - **OpenHarmony desktop form**: Computes the work-area center of the
+  ///   window's current monitor (first available monitor as fallback) and
+  ///   moves the window there via `set_outer_position` — the same geometry
+  ///   the shared `#[cfg(desktop)]` creation-time `.center()` block computes,
+  ///   and gated to the same desktop form so a window created without
+  ///   centering is also not centerable at runtime on mobile.
   fn center(&self) {}
 
   /// Clears the window surface. i.e make it transparent.
@@ -71,10 +74,13 @@ impl WindowExt for tao::window::Window {
     true
   }
 
-  /// OpenHarmony runtime centering. Android/iOS keep the trait-default no-op
-  /// (method-level cfg: adding the method to this shared impl block would
-  /// change the mobile surface too).
-  #[cfg(target_env = "ohos")]
+  /// OpenHarmony runtime centering, desktop form only — mirrors the
+  /// `#[cfg(desktop)]` gate of the creation-time centering block (a
+  /// mobile-form window never centers at creation, so it should not at
+  /// runtime either). Android/iOS and OHOS mobile keep the trait-default
+  /// no-op (method-level cfg: adding the method to this shared impl block
+  /// would change the mobile surface too).
+  #[cfg(all(target_env = "ohos", desktop))]
   fn center(&self) {
     let monitor = self
       .current_monitor()
