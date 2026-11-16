@@ -6,7 +6,7 @@ use super::{get_app, Target};
 use crate::{
   helpers::app_paths::Dirs,
   helpers::{
-    config::{get_config as get_tauri_config, Config},
+    config::{get_config as get_tauri_config, Color, Config},
     template::JsonMap,
   },
   interface::AppInterface,
@@ -260,6 +260,14 @@ fn exec(
       let (background_color_set, background_color) = window_background_color(&tauri_config);
       map.insert("window-background-color-set", background_color_set);
       map.insert("window-background-color", background_color);
+      // System-bar icon/text color derived from the same background's
+      // luminance (issue Eulogizethesun/tauri#224 / C96) - see
+      // system_bar_content_color() below. The bar backgrounds stay
+      // transparent; only the content color is derived.
+      map.insert(
+        "system-bar-content-color",
+        system_bar_content_color(&tauri_config),
+      );
 
       let detected_plugins =
         super::open_harmony::plugins::detect_all_plugins(dirs.tauri).unwrap_or_default();
@@ -319,6 +327,17 @@ fn exec(
   Ok(app)
 }
 
+/// First window's configured `background_color` (RGBA), the shared input for
+/// both the first-frame window background and the system-bar content color
+/// derivations (issue Eulogizethesun/tauri#224 / C96).
+fn first_window_background_color(tauri_config: &Config) -> Option<Color> {
+  tauri_config
+    .app
+    .windows
+    .first()
+    .and_then(|w| w.background_color)
+}
+
 /// Renders tauri.conf's first `app.windows` `background_color` as the OHOS
 /// `#AARRGGBB` value of the `window-background-color` template variable: the
 /// EntryAbility.ets.hbs templates apply it to the window layer in
@@ -334,11 +353,7 @@ fn exec(
 /// background and breaks dark mode. Alpha is passed through unclamped -
 /// window-layer alpha semantics are the OS's, same as the webview layer's.
 fn window_background_color(tauri_config: &Config) -> (bool, String) {
-  tauri_config
-    .app
-    .windows
-    .first()
-    .and_then(|w| w.background_color)
+  first_window_background_color(tauri_config)
     .map(|c| {
       (
         true,
@@ -346,6 +361,35 @@ fn window_background_color(tauri_config: &Config) -> (bool, String) {
       )
     })
     .unwrap_or_else(|| (false, String::new()))
+}
+
+/// Perceptual luma of an RGBA color in `[0, 1]` (ITU-R BT.601 coefficients).
+/// Alpha is ignored: the derivation targets the opaque page background the
+/// bars sit on, and a translucent configured background has no single
+/// underlying color to composite over.
+fn srgb_luma(color: Color) -> f64 {
+  (0.299 * color.0 as f64 + 0.587 * color.1 as f64 + 0.114 * color.2 as f64) / 255.0
+}
+
+/// Derives the `system-bar-content-color` template variable: the
+/// EntryAbility.ets.hbs templates keep the status/navigation bar backgrounds
+/// transparent (the window background and theme show through) and set only
+/// the bar icon/text color, derived from tauri.conf's first `app.windows`
+/// `background_color` so it stays readable on the page background (issue
+/// Eulogizethesun/tauri#224 / C96): bright background -> dark content
+/// (`#FF000000`), dark background -> light content (`#FFFFFFFF`). When no
+/// background is configured the light-theme default (dark content,
+/// `#FF000000`) is used - matching the theme-following bar behavior of the
+/// unset case instead of guessing a theme we don't read.
+fn system_bar_content_color(tauri_config: &Config) -> String {
+  let bright = first_window_background_color(tauri_config)
+    .map(|c| srgb_luma(c) > 0.5)
+    .unwrap_or(true);
+  if bright {
+    "#FF000000".into()
+  } else {
+    "#FFFFFFFF".into()
+  }
 }
 
 pub(crate) fn handlebars(app: &App) -> (Handlebars<'static>, JsonMap) {
@@ -648,7 +692,7 @@ mod tests {
       let mut h = handlebars::Handlebars::new();
       h.register_escape_fn(handlebars::no_escape);
       h.register_template_string("entry", tpl).unwrap();
-      let data = serde_json::json!({"window-background-color-set": true, "window-background-color": "#FF102030"});
+      let data = serde_json::json!({"window-background-color-set": true, "window-background-color": "#FF102030", "system-bar-content-color": "#FF000000"});
       let out = h.render("entry", &data).unwrap();
       assert!(
         out.contains("setWindowBackgroundColor('#FF102030')"),
@@ -658,13 +702,25 @@ mod tests {
         out.contains("setWindowContainerColor('#FF102030', '#FF102030')"),
         "{form}: container color call not rendered as expected"
       );
+      assert!(
+        out.contains("statusBarContentColor: '#FF000000'")
+          && out.contains("navigationBarContentColor: '#FF000000'"),
+        "{form}: derived system-bar content color not rendered"
+      );
+      // The bar backgrounds stay transparent regardless of the derivation -
+      // only the content color flips.
+      assert!(
+        out.contains("statusBarColor: '#00000000'")
+          && out.contains("navigationBarColor: '#00000000'"),
+        "{form}: transparent bar backgrounds must be kept"
+      );
       // Unset background: the background calls are skipped entirely (an
       // unconditional call pins the title bar and breaks dark mode), while
       // the system-bar setup must survive the skip.
       let unset = h
         .render(
           "entry",
-          &serde_json::json!({"window-background-color-set": false, "window-background-color": ""}),
+          &serde_json::json!({"window-background-color-set": false, "window-background-color": "", "system-bar-content-color": "#FFFFFFFF"}),
         )
         .unwrap();
       assert!(
@@ -680,5 +736,46 @@ mod tests {
         "{form}: system bar setup must survive the background skip"
       );
     }
+  }
+
+  #[test]
+  fn system_bar_content_color_is_dark_on_a_bright_background() {
+    let white = config_from(
+      r##"{"identifier":"com.example.test","app":{"windows":[{"label":"main","backgroundColor":"#FFFFFF"}]}}"##,
+    );
+    assert_eq!(system_bar_content_color(&white), "#FF000000");
+    // The OS light-theme default tone: still bright enough for dark content.
+    let light = config_from(
+      r##"{"identifier":"com.example.test","app":{"windows":[{"label":"main","backgroundColor":{"red":240,"green":240,"blue":240,"alpha":255}}]}}"##,
+    );
+    assert_eq!(system_bar_content_color(&light), "#FF000000");
+  }
+
+  #[test]
+  fn system_bar_content_color_is_light_on_a_dark_background() {
+    // The OS dark-theme default tone.
+    let dark = config_from(
+      r##"{"identifier":"com.example.test","app":{"windows":[{"label":"main","backgroundColor":"#1A1A1A"}]}}"##,
+    );
+    assert_eq!(system_bar_content_color(&dark), "#FFFFFFFF");
+    // The scaffold's historical hardcoded black: dark enough for light
+    // content (the old template's #FF000000 content on a black page was
+    // invisible - that contrast bug is what the derivation fixes).
+    let black = config_from(
+      r##"{"identifier":"com.example.test","app":{"windows":[{"label":"main","backgroundColor":{"red":0,"green":0,"blue":0,"alpha":255}}]}}"##,
+    );
+    assert_eq!(system_bar_content_color(&black), "#FFFFFFFF");
+  }
+
+  #[test]
+  fn system_bar_content_color_defaults_to_dark_content_when_unset() {
+    // Unconfigured: keep the light-theme default (dark content) - the
+    // template's pre-#224 behavior - instead of guessing a theme we don't
+    // read.
+    let unconfigured =
+      config_from(r##"{"identifier":"com.example.test","app":{"windows":[{"label":"main"}]}}"##);
+    assert_eq!(system_bar_content_color(&unconfigured), "#FF000000");
+    let no_windows = config_from(r##"{"identifier":"com.example.test","app":{}}"##);
+    assert_eq!(system_bar_content_color(&no_windows), "#FF000000");
   }
 }

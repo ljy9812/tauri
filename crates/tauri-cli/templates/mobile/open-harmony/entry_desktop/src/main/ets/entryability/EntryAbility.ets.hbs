@@ -203,12 +203,21 @@ export default class EntryAbility extends NativeAbility {
       console.error('[Tauri] Failed to set window background: ' + JSON.stringify(e));
     }
     {{/if}}
+    // System bars: transparent backgrounds so the window background and theme
+    // show through, content (icon/text) color derived at generation time from
+    // tauri.conf's first `app.windows` background_color luminance (issue
+    // #224/C96): bright page -> dark content, dark page -> light content;
+    // unconfigured apps keep the light-theme default (dark content).
+    // NOTE: an *unset* bar background is theme-following, not black - the OS
+    // defaults to light #FFF0F0F0 in light theme and dark #FF1A1A1A in dark
+    // theme (@ohos.window.d.ts:6416-6418), which is why transparency is set
+    // explicitly here instead of relying on the default.
     try {
       await win.setWindowSystemBarProperties({
         statusBarColor: '#00000000',
-        statusBarContentColor: '#FF000000',
+        statusBarContentColor: '{{system-bar-content-color}}',
         navigationBarColor: '#00000000',
-        navigationBarContentColor: '#FF000000'
+        navigationBarContentColor: '{{system-bar-content-color}}'
       });
     } catch (e) {
       console.error('[Tauri] Failed to set system bar properties: ' + JSON.stringify(e));
