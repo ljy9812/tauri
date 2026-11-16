@@ -600,7 +600,7 @@ Expected behavior:
   async function manualOsLocaleLive() {
     await wrapManual('osLocaleLive', async () => {
       const { locale } = await import('@tauri-apps/plugin-os');
-      const current = locale();
+      const current = await locale();
       manualResult =
         `locale() = ${JSON.stringify(current)}\n\n` +
         `A/B (issue #215): change the system language (Settings → System → Language & region),\n` +
