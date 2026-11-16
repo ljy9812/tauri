@@ -691,6 +691,106 @@ pub fn write_entry_device_types(
   Ok(())
 }
 
+/// Rewrite `entry_{form}/src/main/module.json5`'s `requestPermissions` per the
+/// conf's `bundle.openHarmony.requestPermissions`, so the configured list
+/// applies on rebuild without re-running `ohos init` (same injection point as
+/// [`write_entry_device_types`] / [`write_entry_continuation`]).
+///
+/// The configured list **replaces the scaffold baseline wholesale** - it is
+/// the single source of truth for the whole `requestPermissions` block, so
+/// pruning the baseline means configuring the app's real permission set (issue
+/// Eulogizethesun/tauri#220). `None` (unset conf) leaves module.json5
+/// untouched, matching the `device_types` precedent for "not configured".
+///
+/// These are OpenHarmony **OS** manifest permissions, orthogonal to Tauri's
+/// ACL/capabilities permissions (which gate IPC access to commands/plugins).
+pub fn write_entry_request_permissions(
+  project_dir: &Path,
+  form: &str,
+  request_permissions: Option<&[tauri_utils::config::OhosRequestPermission]>,
+) -> Result<()> {
+  let Some(permissions) = request_permissions else {
+    return Ok(());
+  };
+  validate_request_permissions(permissions)?;
+
+  let module = format!("entry_{form}");
+  let module_json = project_dir.join(format!("{module}/src/main/module.json5"));
+  let content = fs::read_to_string(&module_json)
+    .with_context(|| format!("failed to read {module}/src/main/module.json5"))?;
+  let mut doc: Value =
+    parse_json5(&content).with_context(|| format!("failed to parse {module} module.json5"))?;
+  let module_obj = doc
+    .get_mut("module")
+    .and_then(|m| m.as_object_mut())
+    .with_context(|| format!("{module}/src/main/module.json5 has no 'module' object"))?;
+  module_obj.insert(
+    "requestPermissions".to_string(),
+    Value::Array(permissions.iter().map(request_permission_value).collect()),
+  );
+  let updated = serialize_json5(&doc)?;
+  fs::write(&module_json, updated)
+    .with_context(|| format!("failed to write {module}/src/main/module.json5"))?;
+  Ok(())
+}
+
+/// Validates the configured `requestPermissions` and renders it as the compact
+/// JSON string the entry module.json5 templates embed verbatim (the
+/// `form-request-permissions` variable, same pre-serialized flow as
+/// `form-device-types`). Every entry normalizes to the OS object element
+/// (`{"name": ...}` plus `reason`/`usedScene`) - the config's bare-string form
+/// is a convenience and must not reach module.json5 as a bare string (issue
+/// Eulogizethesun/tauri#220).
+pub fn request_permissions_json(
+  permissions: &[tauri_utils::config::OhosRequestPermission],
+) -> Result<String> {
+  validate_request_permissions(permissions)?;
+  serde_json::to_string(
+    &permissions
+      .iter()
+      .map(request_permission_value)
+      .collect::<Vec<Value>>(),
+  )
+  .context("failed to serialize requestPermissions")
+}
+
+/// Fail-fast validation of the configured `requestPermissions`: every entry's
+/// `name` must be an `ohos.permission.*` grant. No grant-mode table is
+/// enforced here - the OS/AGC signing profile is the arbiter of which
+/// permissions are grantable, and the error names the offending value (issue
+/// Eulogizethesun/tauri#220).
+pub fn validate_request_permissions(
+  permissions: &[tauri_utils::config::OhosRequestPermission],
+) -> Result<()> {
+  for permission in permissions {
+    let name = permission.name();
+    if !name.starts_with("ohos.permission.") {
+      bail!(
+        "invalid requestPermissions entry `{}`: permission names must start with `ohos.permission.` (issue Eulogizethesun/tauri#220)",
+        name
+      );
+    }
+  }
+  Ok(())
+}
+
+/// Renders one configured permission entry as the `module.json5` element the
+/// OS expects: `{"name": ...}` for the bare-name form, plus `reason` and
+/// `usedScene` for the user_grant object form.
+fn request_permission_value(permission: &tauri_utils::config::OhosRequestPermission) -> Value {
+  match permission {
+    tauri_utils::config::OhosRequestPermission::Name(name) => serde_json::json!({ "name": name }),
+    tauri_utils::config::OhosRequestPermission::Detailed(detail) => serde_json::json!({
+      "name": detail.name,
+      "reason": detail.reason,
+      "usedScene": {
+        "abilities": detail.used_scene.abilities,
+        "when": detail.used_scene.when,
+      }
+    }),
+  }
+}
+
 /// Rewrite `entry_{form}/src/main/module.json5`'s `continuable`/`continueType`
 /// (app continuation gating) per the conf's `bundle.openHarmony` settings, so
 /// conf changes take effect on rebuild without re-running `ohos init` (same
@@ -1295,5 +1395,110 @@ mod tests {
     let before = lines.clone();
     sync_bridge_plugin_factories(&mut lines, "entry_mobile");
     assert_eq!(before, lines);
+  }
+
+  // Issue Eulogizethesun/tauri#220: requestPermissions validation and the
+  // module.json5 rewrite.
+
+  use tauri_utils::config::{
+    OhosRequestPermission as Permission, OhosRequestPermissionDetail,
+    OhosRequestPermissionUsedScene,
+  };
+
+  fn sample_permissions() -> Vec<Permission> {
+    vec![
+      Permission::Name("ohos.permission.INTERNET".into()),
+      Permission::Detailed(OhosRequestPermissionDetail {
+        name: "ohos.permission.READ_PASTEBOARD".into(),
+        reason: "$string:reason_clipboard".into(),
+        used_scene: OhosRequestPermissionUsedScene {
+          abilities: vec!["EntryAbility".into()],
+          when: "inuse".into(),
+        },
+      }),
+    ]
+  }
+
+  #[test]
+  fn request_permissions_validation_accepts_ohos_names() {
+    assert!(validate_request_permissions(&sample_permissions()).is_ok());
+    assert!(validate_request_permissions(&[]).is_ok());
+  }
+
+  #[test]
+  fn request_permissions_validation_names_the_offending_value() {
+    let bad = vec![Permission::Name("android.permission.INTERNET".into())];
+    let err = validate_request_permissions(&bad).unwrap_err().to_string();
+    assert!(
+      err.contains("android.permission.INTERNET"),
+      "error must name the offending value: {err}"
+    );
+    // the object form is validated through the same name accessor
+    let mut bad_detail = sample_permissions();
+    bad_detail[1] = Permission::Detailed(OhosRequestPermissionDetail {
+      name: "not-a-permission".into(),
+      reason: "$string:reason_clipboard".into(),
+      used_scene: OhosRequestPermissionUsedScene {
+        abilities: vec!["EntryAbility".into()],
+        when: "inuse".into(),
+      },
+    });
+    assert!(validate_request_permissions(&bad_detail).is_err());
+  }
+
+  /// A minimal generated project tree around the
+  /// `entry_mobile/src/main/module.json5` anchor [`write_entry_request_permissions`]
+  /// rewrites.
+  fn scaffold_module_json5() -> String {
+    format!(
+      r#"{{
+  "module": {{
+    "name": "entry_mobile",
+    "requestPermissions": [
+      {{ "name": "ohos.permission.INTERNET" }},
+      {{ "name": "ohos.permission.SET_WINDOW_TRANSPARENT" }},
+      {{ "name": "ohos.permission.PUBLISH_AGENT_REMINDER" }}
+    ]
+  }}
+}}"#
+    )
+  }
+
+  #[test]
+  fn write_entry_request_permissions_replaces_the_baseline_wholesale() {
+    let dir = std::env::temp_dir().join(format!("tauri-cli-req-perm-test-{}", std::process::id()));
+    let module_dir = dir.join("entry_mobile/src/main");
+    fs::create_dir_all(&module_dir).unwrap();
+    fs::write(module_dir.join("module.json5"), scaffold_module_json5()).unwrap();
+
+    // Unset config: a no-op - the baseline survives untouched.
+    write_entry_request_permissions(&dir, "mobile", None).unwrap();
+    assert_eq!(
+      fs::read_to_string(module_dir.join("module.json5")).unwrap(),
+      scaffold_module_json5()
+    );
+
+    // Configured: the whole block is replaced (no baseline entry leaks).
+    write_entry_request_permissions(&dir, "mobile", Some(&sample_permissions())).unwrap();
+    let rewritten = fs::read_to_string(module_dir.join("module.json5")).unwrap();
+    let doc: Value = json5::from_str(&rewritten).unwrap();
+    let list = doc["module"]["requestPermissions"].as_array().unwrap();
+    assert_eq!(
+      list.len(),
+      2,
+      "baseline must be replaced wholesale: {rewritten}"
+    );
+    assert_eq!(list[0]["name"], "ohos.permission.INTERNET");
+    // the object form keeps the OS element field names
+    assert_eq!(list[1]["name"], "ohos.permission.READ_PASTEBOARD");
+    assert_eq!(list[1]["reason"], "$string:reason_clipboard");
+    assert_eq!(list[1]["usedScene"]["abilities"][0], "EntryAbility");
+    assert_eq!(list[1]["usedScene"]["when"], "inuse");
+    assert!(
+      !rewritten.contains("PUBLISH_AGENT_REMINDER"),
+      "baseline entries must not survive the rewrite: {rewritten}"
+    );
+
+    fs::remove_dir_all(&dir).ok();
   }
 }

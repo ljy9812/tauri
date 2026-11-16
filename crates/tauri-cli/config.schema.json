@@ -4006,6 +4006,16 @@
           "items": {
             "type": "string"
           }
+        },
+        "requestPermissions": {
+          "description": "The OpenHarmony `requestPermissions` list written into each entry\n module.json5, **replacing the scaffold baseline wholesale** when present\n (issue Eulogizethesun/tauri#220). When omitted, the scaffold baseline is\n left untouched. Entries are either a bare permission name (system_grant)\n or an object with `name`, `reason` and `usedScene` (user_grant); every\n name must start with `ohos.permission.`.\n\n ### Orthogonality\n\n These are OpenHarmony **OS** manifest permissions - a different system\n from Tauri's ACL/capabilities permissions, which govern IPC access to\n Tauri commands and plugins, not OS API access. Runtime OS-permission\n queries are a plugin concern (see plugins-workspace PR #15).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/OhosRequestPermission"
+          }
         }
       },
       "additionalProperties": false
@@ -4031,6 +4041,73 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "OhosRequestPermission": {
+      "description": "One OpenHarmony `module.json5` `requestPermissions` entry (issue\n Eulogizethesun/tauri#220): either a bare permission name (system_grant) or\n the object form carrying `reason` and `usedScene` (user_grant), mirroring\n the scaffold's `ohos.permission.PRINT` entry shape.",
+      "anyOf": [
+        {
+          "description": "A bare permission name, e.g. `\"ohos.permission.INTERNET\"` (system_grant).",
+          "type": "string"
+        },
+        {
+          "description": "A user_grant permission with its `reason` string resource and usage\n scene.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/OhosRequestPermissionDetail"
+            }
+          ]
+        }
+      ]
+    },
+    "OhosRequestPermissionDetail": {
+      "description": "The object form of a `requestPermissions` entry (user_grant), matching the\n OS `requestPermissions` element fields (`name`/`reason`/`usedScene`).",
+      "type": "object",
+      "required": [
+        "name",
+        "reason",
+        "usedScene"
+      ],
+      "properties": {
+        "name": {
+          "description": "The permission name, e.g. `ohos.permission.READ_PASTEBOARD`.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "The `reason` string resource (e.g. `$string:reason_clipboard`); the OS\n requires it for user_grant permissions, and the ACL signing profile must\n carry it for restricted permissions.",
+          "type": "string"
+        },
+        "usedScene": {
+          "description": "The usage scene: which abilities use the permission and when.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/OhosRequestPermissionUsedScene"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "OhosRequestPermissionUsedScene": {
+      "description": "The `usedScene` object of a user_grant `requestPermissions` entry.",
+      "type": "object",
+      "required": [
+        "abilities",
+        "when"
+      ],
+      "properties": {
+        "abilities": {
+          "description": "The abilities that use the permission (e.g. `[\"EntryAbility\"]`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "when": {
+          "description": "When the permission is used: `inuse` or `always`.",
+          "type": "string"
         }
       },
       "additionalProperties": false

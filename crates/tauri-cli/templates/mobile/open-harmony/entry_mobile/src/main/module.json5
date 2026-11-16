@@ -45,6 +45,13 @@
         ]
       }
     ],
+    // bundle.openHarmony.requestPermissions replaces this baseline wholesale
+    // when configured (init renders the configured list, builds rewrite it -
+    // issue #220); unset config keeps the baseline below. These are OS
+    // manifest permissions, unrelated to tauri capabilities/ACL permissions.
+    {{#if form-request-permissions-set}}
+    "requestPermissions": {{{form-request-permissions}}}
+    {{else}}
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"
@@ -94,5 +101,6 @@
         "name": "ohos.permission.PUBLISH_AGENT_REMINDER"
       }
     ]
+    {{/if}}
   }
 }

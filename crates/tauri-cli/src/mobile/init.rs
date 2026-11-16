@@ -269,6 +269,16 @@ fn exec(
         system_bar_content_color(&tauri_config),
       );
 
+      // Entry module.json5 requestPermissions: when configured, the list
+      // replaces the scaffold baseline wholesale (issue
+      // Eulogizethesun/tauri#220) - pre-serialized JSON like
+      // `form-device-types` so the triple-brace renders it verbatim; unset
+      // config leaves the baseline untouched.
+      let (request_permissions_set, request_permissions_json) =
+        entry_request_permissions(&tauri_config)?;
+      map.insert("form-request-permissions-set", request_permissions_set);
+      map.insert("form-request-permissions", request_permissions_json);
+
       let detected_plugins =
         super::open_harmony::plugins::detect_all_plugins(dirs.tauri).unwrap_or_default();
 
@@ -389,6 +399,27 @@ fn system_bar_content_color(tauri_config: &Config) -> String {
     "#FF000000".into()
   } else {
     "#FFFFFFFF".into()
+  }
+}
+
+/// Renders the configured `bundle.openHarmony.requestPermissions` as the
+/// pre-serialized JSON string of the `form-request-permissions` template
+/// variable (validated and normalized to the OS object elements by the same
+/// helper the build-time rewrite uses). Returns `(false, "")` when unset: the
+/// entry module.json5 templates keep their scaffold baseline (issue
+/// Eulogizethesun/tauri#220).
+fn entry_request_permissions(tauri_config: &Config) -> crate::Result<(bool, String)> {
+  match tauri_config
+    .bundle
+    .open_harmony
+    .request_permissions
+    .as_deref()
+  {
+    Some(permissions) => Ok((
+      true,
+      super::open_harmony::plugins::request_permissions_json(permissions)?,
+    )),
+    None => Ok((false, String::new())),
   }
 }
 
@@ -777,5 +808,120 @@ mod tests {
     assert_eq!(system_bar_content_color(&unconfigured), "#FF000000");
     let no_windows = config_from(r##"{"identifier":"com.example.test","app":{}}"##);
     assert_eq!(system_bar_content_color(&no_windows), "#FF000000");
+  }
+
+  #[test]
+  fn entry_request_permissions_serializes_the_configured_list() {
+    // Issue Eulogizethesun/tauri#220: the configured list is pre-serialized
+    // (compact JSON, same shape the OS expects) for the template's
+    // triple-brace.
+    let config = config_from(
+      r##"{"identifier":"com.example.test","bundle":{"openHarmony":{"requestPermissions":[
+        "ohos.permission.INTERNET",
+        {"name":"ohos.permission.READ_PASTEBOARD","reason":"$string:reason_clipboard","usedScene":{"abilities":["EntryAbility"],"when":"inuse"}}
+      ]}}}"##,
+    );
+    let (set, json) = entry_request_permissions(&config).unwrap();
+    assert!(set);
+    assert_eq!(
+      json,
+      r#"[{"name":"ohos.permission.INTERNET"},{"name":"ohos.permission.READ_PASTEBOARD","reason":"$string:reason_clipboard","usedScene":{"abilities":["EntryAbility"],"when":"inuse"}}]"#
+    );
+  }
+
+  #[test]
+  fn entry_request_permissions_fails_fast_on_non_ohos_names() {
+    let config = config_from(
+      r##"{"identifier":"com.example.test","bundle":{"openHarmony":{"requestPermissions":["android.permission.INTERNET"]}}}"##,
+    );
+    let err = entry_request_permissions(&config).unwrap_err().to_string();
+    assert!(
+      err.contains("android.permission.INTERNET"),
+      "error must name the offending value: {err}"
+    );
+  }
+
+  #[test]
+  fn entry_request_permissions_is_unset_when_not_configured() {
+    // Unset: the scaffold baseline stays - the template keeps its own block.
+    let config = config_from(r##"{"identifier":"com.example.test"}"##);
+    assert_eq!(
+      entry_request_permissions(&config).unwrap(),
+      (false, String::new())
+    );
+  }
+
+  #[test]
+  fn ohos_entry_module_json5_templates_render_request_permissions() {
+    // End-to-end with the real template files: both render forms (configured
+    // list / unset baseline) must produce JSON5 the build's module.json5
+    // rewrite can parse. The two files differ outside this block on purpose
+    // (abilityStage/launchType), so each is rendered with its own form name.
+    let tpls = [
+      (
+        "mobile",
+        include_str!("../../templates/mobile/open-harmony/entry_mobile/src/main/module.json5"),
+      ),
+      (
+        "desktop",
+        include_str!("../../templates/mobile/open-harmony/entry_desktop/src/main/module.json5"),
+      ),
+    ];
+    for (form, tpl) in tpls {
+      let mut h = handlebars::Handlebars::new();
+      h.register_escape_fn(handlebars::no_escape);
+      h.register_template_string("module", tpl).unwrap();
+
+      // Configured: the list replaces the scaffold baseline wholesale.
+      let configured = h
+        .render(
+          "module",
+          &serde_json::json!({
+            "form": form,
+            "form-device-types": r#"["phone","tablet"]"#,
+            "form-request-permissions-set": true,
+            "form-request-permissions": r#"[{"name":"ohos.permission.INTERNET"},{"name":"ohos.permission.READ_PASTEBOARD","reason":"$string:reason_clipboard","usedScene":{"abilities":["EntryAbility"],"when":"inuse"}}]"#,
+          }),
+        )
+        .unwrap();
+      let doc: serde_json::Value =
+        json5::from_str(&configured).unwrap_or_else(|e| panic!("{form}: {e}: {configured}"));
+      let list = doc["module"]["requestPermissions"].as_array().unwrap();
+      assert_eq!(
+        list.len(),
+        2,
+        "{form}: baseline must be replaced: {configured}"
+      );
+      assert_eq!(list[0]["name"], "ohos.permission.INTERNET");
+      assert_eq!(list[1]["usedScene"]["when"], "inuse");
+      assert!(
+        !configured.contains("PUBLISH_AGENT_REMINDER"),
+        "{form}: baseline entries must not survive the configured render"
+      );
+
+      // Unset: the baseline survives, including the desktop-only conditional.
+      let unset = h
+        .render(
+          "module",
+          &serde_json::json!({
+            "form": form,
+            "form-device-types": r#"["phone","tablet"]"#,
+            "form-request-permissions-set": false,
+            "form-request-permissions": "",
+          }),
+        )
+        .unwrap();
+      let doc: serde_json::Value =
+        json5::from_str(&unset).unwrap_or_else(|e| panic!("{form}: {e}: {unset}"));
+      let list = doc["module"]["requestPermissions"].as_array().unwrap();
+      assert!(
+        list
+          .iter()
+          .any(|p| p["name"] == "ohos.permission.PUBLISH_AGENT_REMINDER"),
+        "{form}: baseline entries must survive the unset render: {unset}"
+      );
+      let has_print = list.iter().any(|p| p["name"] == "ohos.permission.PRINT");
+      assert_eq!(has_print, form == "desktop", "{form}: desktop conditional");
+    }
   }
 }

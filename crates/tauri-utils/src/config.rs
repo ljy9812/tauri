@@ -3287,6 +3287,22 @@ pub struct OpenHarmonyConfig {
   /// `continuable` is `Some(true)`; defaults to `[identifier]` when omitted.
   #[serde(alias = "continue-type")]
   pub continue_type: Option<Vec<String>>,
+
+  /// The OpenHarmony `requestPermissions` list written into each entry
+  /// module.json5, **replacing the scaffold baseline wholesale** when present
+  /// (issue Eulogizethesun/tauri#220). When omitted, the scaffold baseline is
+  /// left untouched. Entries are either a bare permission name (system_grant)
+  /// or an object with `name`, `reason` and `usedScene` (user_grant); every
+  /// name must start with `ohos.permission.`.
+  ///
+  /// ### Orthogonality
+  ///
+  /// These are OpenHarmony **OS** manifest permissions - a different system
+  /// from Tauri's ACL/capabilities permissions, which govern IPC access to
+  /// Tauri commands and plugins, not OS API access. Runtime OS-permission
+  /// queries are a plugin concern (see plugins-workspace PR #15).
+  #[serde(alias = "request-permissions", default)]
+  pub request_permissions: Option<Vec<OhosRequestPermission>>,
 }
 
 /// Per-form OHOS device types. Each list drives one Entry HAP's `module.json5`
@@ -3321,6 +3337,58 @@ fn default_mobile_device_types() -> Vec<String> {
 
 fn default_desktop_device_types() -> Vec<String> {
   vec!["2in1".into()]
+}
+
+/// One OpenHarmony `module.json5` `requestPermissions` entry (issue
+/// Eulogizethesun/tauri#220): either a bare permission name (system_grant) or
+/// the object form carrying `reason` and `usedScene` (user_grant), mirroring
+/// the scaffold's `ohos.permission.PRINT` entry shape.
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "camelCase", untagged)]
+pub enum OhosRequestPermission {
+  /// A bare permission name, e.g. `"ohos.permission.INTERNET"` (system_grant).
+  Name(String),
+  /// A user_grant permission with its `reason` string resource and usage
+  /// scene.
+  Detailed(OhosRequestPermissionDetail),
+}
+
+impl OhosRequestPermission {
+  /// The `module.json5` `name` value of this entry, whichever form it takes.
+  pub fn name(&self) -> &str {
+    match self {
+      Self::Name(name) => name,
+      Self::Detailed(detail) => &detail.name,
+    }
+  }
+}
+
+/// The object form of a `requestPermissions` entry (user_grant), matching the
+/// OS `requestPermissions` element fields (`name`/`reason`/`usedScene`).
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OhosRequestPermissionDetail {
+  /// The permission name, e.g. `ohos.permission.READ_PASTEBOARD`.
+  pub name: String,
+  /// The `reason` string resource (e.g. `$string:reason_clipboard`); the OS
+  /// requires it for user_grant permissions, and the ACL signing profile must
+  /// carry it for restricted permissions.
+  pub reason: String,
+  /// The usage scene: which abilities use the permission and when.
+  pub used_scene: OhosRequestPermissionUsedScene,
+}
+
+/// The `usedScene` object of a user_grant `requestPermissions` entry.
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OhosRequestPermissionUsedScene {
+  /// The abilities that use the permission (e.g. `["EntryAbility"]`).
+  pub abilities: Vec<String>,
+  /// When the permission is used: `inuse` or `always`.
+  pub when: String,
 }
 
 /// Defines the URL or assets to embed in the application.
@@ -4812,5 +4880,69 @@ mod test {
     let config_from_default: WindowConfig = WindowConfig::default();
 
     assert_eq!(config_from_deserialization, config_from_default);
+  }
+
+  #[test]
+  fn open_harmony_request_permissions_accepts_name_and_object_forms() {
+    use super::OhosRequestPermission as P;
+
+    let conf: OpenHarmonyConfig = serde_json::from_str(
+      r#"{
+        "requestPermissions": [
+          "ohos.permission.INTERNET",
+          {
+            "name": "ohos.permission.READ_PASTEBOARD",
+            "reason": "$string:reason_clipboard",
+            "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
+          }
+        ]
+      }"#,
+    )
+    .unwrap();
+    let list = conf.request_permissions.expect("configured list");
+    assert_eq!(list[0], P::Name("ohos.permission.INTERNET".into()));
+    match &list[1] {
+      P::Detailed(d) => {
+        assert_eq!(d.name, "ohos.permission.READ_PASTEBOARD");
+        assert_eq!(d.reason, "$string:reason_clipboard");
+        assert_eq!(d.used_scene.abilities, ["EntryAbility"]);
+        assert_eq!(d.used_scene.when, "inuse");
+      }
+      other => panic!("expected the detailed form, got {other:?}"),
+    }
+
+    // kebab-case alias and name() accessor work for both forms
+    let aliased: OpenHarmonyConfig =
+      serde_json::from_str(r#"{"request-permissions": ["ohos.permission.INTERNET"]}"#).unwrap();
+    assert_eq!(
+      aliased.request_permissions,
+      Some(vec![P::Name("ohos.permission.INTERNET".into())])
+    );
+    assert_eq!(
+      aliased.request_permissions.as_deref().unwrap()[0].name(),
+      "ohos.permission.INTERNET"
+    );
+
+    // serializing round-trips the object form with OS field names
+    let serialized = serde_json::to_string(&list).unwrap();
+    assert!(serialized.contains(r#""usedScene":{"abilities":["EntryAbility"],"when":"inuse"}"#));
+  }
+
+  #[test]
+  fn open_harmony_request_permissions_absent_keeps_baseline_untouched() {
+    // Absent -> None: the CLI leaves the scaffold baseline alone (the
+    // device_types precedent for "not configured").
+    let conf: OpenHarmonyConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(conf.request_permissions, None);
+
+    // skip_serializing_none: an unset list must not serialize at all, so a
+    // rebuild cannot mistake "unset" for "configured empty list" (which
+    // would wipe the baseline).
+    let unset = OpenHarmonyConfig::default();
+    let serialized = serde_json::to_string(&unset).unwrap();
+    assert!(
+      !serialized.contains("requestPermissions"),
+      "unset requestPermissions must not serialize: {serialized}"
+    );
   }
 }

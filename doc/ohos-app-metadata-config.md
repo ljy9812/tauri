@@ -170,6 +170,12 @@ autoIncrementVersionCode: bool          —
 
 Android 有 3 个字段，OHOS 只有 2 个。`minSdkVersion` 和 `autoIncrementVersionCode` 对 OHOS 不需要——OHOS 的 SDK 版本由 `build-profile.json5` 的 `compatibleSdkVersion` 控制（模板默认值即可），`versionCode` 无需自动递增。`permissions` 和 `startWindowBackground` 直接编辑生成的 `module.json5` 和资源文件即可。
 
+#### 4.2.4 requestPermissions 配置与权限体系正交性（issue #220）
+
+`bundle.openHarmony.requestPermissions` 配置 entry 模块 `module.json5` 的 `requestPermissions` 列表：每项为裸权限名（system_grant，如 `"ohos.permission.INTERNET"`）或对象（user_grant，含 `name`/`reason`/`usedScene{abilities,when}`，仿模板 PRINT 形态）；任一 `name` 必须以 `ohos.permission.` 开头（写入时 fail-fast 并报出该值）。**配置存在时整体替换模板基线**（删权限即配置应用的真实全集），缺省时基线不动（对齐 `deviceTypes` 先例）；init 渲染模板、build 改写既有工程，两条路径同一语义。
+
+**正交性**：这些是 OpenHarmony **OS manifest 权限**（决定能否调用系统能力），与 Tauri 的 ACL/capabilities 权限（决定 webview 能否访问 Tauri 命令/插件 IPC）是两套独立体系，互不派生；运行时 OS 权限查询属插件范畴（见 plugins-workspace PR #15）。
+
 ### 4.3 OHOS 图标生成设计（修复 G1）
 
 #### 4.3.1 设计思路

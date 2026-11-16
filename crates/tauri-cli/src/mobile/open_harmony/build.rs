@@ -236,6 +236,19 @@ pub fn command(options: Options, noise_level: NoiseLevel) -> Result<()> {
         &tauri_config.identifier,
       )
       .context("failed to align entry continuation gating")?;
+      // Same injection point: align entry requestPermissions per conf
+      // `bundle.openHarmony` (unset conf keeps the scaffold baseline) so it
+      // also applies on rebuild (issue Eulogizethesun/tauri#220).
+      plugins::write_entry_request_permissions(
+        &config.project_dir(),
+        form,
+        tauri_config
+          .bundle
+          .open_harmony
+          .request_permissions
+          .as_deref(),
+      )
+      .context("failed to align entry requestPermissions")?;
     }
     run_app(&config, &mut env, noise_level, profile, &active_forms)?;
   } else {
@@ -380,6 +393,19 @@ fn run_build(
     &tauri_config.identifier,
   )
   .context("failed to align entry continuation gating")?;
+  // Same injection point: align entry requestPermissions per conf
+  // `bundle.openHarmony` (unset conf keeps the scaffold baseline) so it
+  // also applies on rebuild (issue Eulogizethesun/tauri#220).
+  plugins::write_entry_request_permissions(
+    &config.project_dir(),
+    &options.device_type,
+    tauri_config
+      .bundle
+      .open_harmony
+      .request_permissions
+      .as_deref(),
+  )
+  .context("failed to align entry requestPermissions")?;
 
   // The CLI has already compiled the Rust `.so` via `first_target.build` in
   // `command`. In the non-`--open` path, tell the hvigor `tauriPlugin` to
