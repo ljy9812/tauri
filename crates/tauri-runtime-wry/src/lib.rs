@@ -4692,10 +4692,9 @@ fn handle_user_message<T: UserEvent>(
               let mut auto_state = webview.bounds.lock().unwrap();
               // The size axis becomes real; the position axis keeps its
               // previous realness (the sentinel never enters the wry cache)
-              // (issue Eulogizethesun/tauri#244).
-              if auto_state.explicit == BoundsExplicitness::Natural {
-                auto_state.explicit = BoundsExplicitness::Partial;
-              }
+              // (issue Eulogizethesun/tauri#244, per-axis transitions issue
+              // Eulogizethesun/tauri#256).
+              auto_state.explicit = ohos_set_size_explicitness(auto_state.explicit);
               let rate_target = if auto_state.rates.is_some() {
                 auto_state.rates.as_mut()
               } else {
@@ -4758,10 +4757,9 @@ fn handle_user_message<T: UserEvent>(
               let mut auto_state = webview.bounds.lock().unwrap();
               // The position axis becomes real; the size axis keeps its
               // previous realness (the sentinel never enters the wry cache)
-              // (issue Eulogizethesun/tauri#244).
-              if auto_state.explicit == BoundsExplicitness::Natural {
-                auto_state.explicit = BoundsExplicitness::Partial;
-              }
+              // (issue Eulogizethesun/tauri#244, per-axis transitions issue
+              // Eulogizethesun/tauri#256).
+              auto_state.explicit = ohos_set_position_explicitness(auto_state.explicit);
               let rate_target = if auto_state.rates.is_some() {
                 auto_state.rates.as_mut()
               } else {
@@ -4968,9 +4966,21 @@ fn handle_user_message<T: UserEvent>(
                     // ArkTS container keeps it following window resizes.
                   }
                   OhosAutoResizeEnableDecision::LoudError => {
+                    // Name the missing axis so the remedy is actionable
+                    // without a debugger (per-axis states, issue
+                    // Eulogizethesun/tauri#256).
+                    let detail = match state.explicit {
+                      BoundsExplicitness::PartialSize => "a partial set_size made the size axis explicit while the position axis still holds the natural-layout placeholder",
+                      BoundsExplicitness::PartialPosition => "a partial set_position made the position axis explicit while the size axis still holds the natural-layout placeholder",
+                      // The decision function returns LoudError only for the
+                      // two per-axis partial states; the catch-all keeps this
+                      // match total without panicking.
+                      _ => "its geometry is only partially explicit",
+                    };
                     log::error!(
-                      "set_auto_resize(true) cannot re-arm webview `{}`: its geometry is only partially explicit (a partial set_size/set_position made one axis explicit while the other still holds the natural-layout placeholder) and no rates are parked from a previous arm; it would pin or shrink on the next window resize. Issue a full set_bounds first, then re-enable auto-resize (issue Eulogizethesun/tauri#244)",
-                      webview.label
+                      "set_auto_resize(true) cannot re-arm webview `{}`: {} and no rates are parked from a previous arm; it would pin or shrink on the next window resize. Issue a full set_bounds first, then re-enable auto-resize (issue Eulogizethesun/tauri#244)",
+                      webview.label,
+                      detail
                     );
                     // rates stay None: the webview is left un-armed rather
                     // than armed on an underivable base.
@@ -6367,26 +6377,34 @@ struct WebviewBounds {
 
 // --- OHOS auto-resize re-arm state (issue Eulogizethesun/tauri#244) ----------
 
-/// Whether a webview's wry bounds cache holds fully real geometry.
+/// How much of a webview's wry bounds cache holds real geometry.
 ///
 /// Sentinels never enter the wry cache (`merge_bounds_into_cache` screens
-/// them out), so realness is a per-axis property that only the *unset* axis
-/// of a partial write can regress: a natural-layout (bounds-less) webview's
-/// cache holds the upstream 200x200 placeholder on both axes (`Natural`);
-/// a runtime `set_size`/`set_position` makes one axis real and leaves the
-/// other at the placeholder (`Partial`); explicit creation bounds or a full
-/// `set_bounds` make every component real (`Full`).
-// `Partial` is only constructed by the OHOS partial-write arms; the type must
-// still exist on every target for the handle state and the host UT.
+/// them out), so realness is a per-axis property: a natural-layout
+/// (bounds-less) webview's cache holds the upstream 200x200 placeholder on
+/// both axes (`Natural`); a runtime `set_size`/`set_position` makes one axis
+/// real and leaves the other at the placeholder (`PartialSize` /
+/// `PartialPosition`, tracked per axis - issue Eulogizethesun/tauri#256);
+/// explicit creation bounds, a full `set_bounds`, or the second single-axis
+/// write (by then both axes have been written) make every component real
+/// (`Full`).
+// The per-axis partial states are only constructed by the OHOS partial-write
+// arms; the type must still exist on every target for the handle state and
+// the host UT.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(target_env = "ohos"), allow(dead_code))]
 enum BoundsExplicitness {
   /// Created bounds-less: the cache holds the 200x200 placeholder.
   #[default]
   Natural,
-  /// One axis explicit (runtime partial write), the other still placeholder.
-  Partial,
-  /// Explicit creation bounds or a full set_bounds: the cache is all-real.
+  /// The size axis is explicit (a runtime `set_size`); the position axis
+  /// still holds the placeholder.
+  PartialSize,
+  /// The position axis is explicit (a runtime `set_position`); the size axis
+  /// still holds the placeholder.
+  PartialPosition,
+  /// Explicit creation bounds, a full set_bounds, or both single-axis writes:
+  /// the cache is all-real.
   Full,
 }
 
@@ -6433,7 +6451,37 @@ fn ohos_auto_resize_enable_decision(
   match state.explicit {
     BoundsExplicitness::Full => OhosAutoResizeEnableDecision::DeriveFromCache,
     BoundsExplicitness::Natural => OhosAutoResizeEnableDecision::FollowContainer,
-    BoundsExplicitness::Partial => OhosAutoResizeEnableDecision::LoudError,
+    BoundsExplicitness::PartialSize | BoundsExplicitness::PartialPosition => {
+      OhosAutoResizeEnableDecision::LoudError
+    }
+  }
+}
+
+/// BoundsExplicitness transition for an OHOS runtime `set_size` (per-axis,
+/// issue Eulogizethesun/tauri#256): the size axis becomes real, so a
+/// previously position-only webview now has both axes real (`Full`).
+/// Extracted as a pure function so the state machine is host-testable, same
+/// as the enable decision.
+#[cfg_attr(not(target_env = "ohos"), allow(dead_code))]
+fn ohos_set_size_explicitness(prev: BoundsExplicitness) -> BoundsExplicitness {
+  match prev {
+    BoundsExplicitness::Natural => BoundsExplicitness::PartialSize,
+    BoundsExplicitness::PartialPosition => BoundsExplicitness::Full,
+    // PartialSize: the size axis was already real. Full: stays all-real.
+    BoundsExplicitness::PartialSize | BoundsExplicitness::Full => prev,
+  }
+}
+
+/// BoundsExplicitness transition for an OHOS runtime `set_position` - the
+/// mirror of [`ohos_set_size_explicitness`] (issue Eulogizethesun/tauri#256).
+#[cfg_attr(not(target_env = "ohos"), allow(dead_code))]
+fn ohos_set_position_explicitness(prev: BoundsExplicitness) -> BoundsExplicitness {
+  match prev {
+    BoundsExplicitness::Natural => BoundsExplicitness::PartialPosition,
+    BoundsExplicitness::PartialSize => BoundsExplicitness::Full,
+    // PartialPosition: the position axis was already real. Full: stays
+    // all-real.
+    BoundsExplicitness::PartialPosition | BoundsExplicitness::Full => prev,
   }
 }
 
@@ -7623,7 +7671,7 @@ mod auto_resize_enable_decision_tests {
 
     // Precedence holds even when the webview was never fully explicit: a
     // parked rate set is the geometry the previous arm actually used.
-    state.explicit = BoundsExplicitness::Partial;
+    state.explicit = BoundsExplicitness::PartialSize;
     let parked2 = rates(0.5, 0.6, 0.7, 0.8);
     state.parked = Some(parked2.clone());
     assert_eq!(
@@ -7660,18 +7708,93 @@ mod auto_resize_enable_decision_tests {
   }
 
   // Row 4: partially-explicit geometry with no parked rates → loud error, so
-  // enable can never silently arm on the underivable 200x200 placeholder axis
-  // (the old behavior silently left rates unset while returning Ok).
+  // enable can never silently arm on the underivable placeholder axis
+  // (the old behavior silently left rates unset while returning Ok). Both
+  // per-axis partial states are loud (issue Eulogizethesun/tauri#256).
   #[test]
   fn enable_loud_errors_on_partial_geometry_without_parked_rates() {
-    let state = WebviewAutoResizeState {
-      rates: None,
-      parked: None,
-      explicit: BoundsExplicitness::Partial,
-    };
+    for explicit in [
+      BoundsExplicitness::PartialSize,
+      BoundsExplicitness::PartialPosition,
+    ] {
+      let state = WebviewAutoResizeState {
+        rates: None,
+        parked: None,
+        explicit,
+      };
+      assert_eq!(
+        ohos_auto_resize_enable_decision(&state),
+        OhosAutoResizeEnableDecision::LoudError
+      );
+    }
+  }
+
+  // Issue Eulogizethesun/tauri#256: the per-axis write transitions. The
+  // acceptance sequence — natural-layout webview, setSize, setPosition,
+  // set_auto_resize(true) — must end derivable (armed), not LoudError: the
+  // second single-axis write completes the cache, so the state reaches Full.
+  #[test]
+  fn partial_writes_accumulate_into_full_regardless_of_axis_order() {
+    // set_size first, then set_position.
+    let mut state = WebviewAutoResizeState::default();
+    assert_eq!(state.explicit, BoundsExplicitness::Natural);
+    state.explicit = ohos_set_size_explicitness(state.explicit);
+    assert_eq!(state.explicit, BoundsExplicitness::PartialSize);
+    state.explicit = ohos_set_position_explicitness(state.explicit);
+    assert_eq!(state.explicit, BoundsExplicitness::Full);
     assert_eq!(
       ohos_auto_resize_enable_decision(&state),
-      OhosAutoResizeEnableDecision::LoudError
+      OhosAutoResizeEnableDecision::DeriveFromCache
+    );
+
+    // Mirrored order: set_position first, then set_size.
+    let mut state = WebviewAutoResizeState::default();
+    state.explicit = ohos_set_position_explicitness(state.explicit);
+    assert_eq!(state.explicit, BoundsExplicitness::PartialPosition);
+    state.explicit = ohos_set_size_explicitness(state.explicit);
+    assert_eq!(state.explicit, BoundsExplicitness::Full);
+    assert_eq!(
+      ohos_auto_resize_enable_decision(&state),
+      OhosAutoResizeEnableDecision::DeriveFromCache
+    );
+  }
+
+  // Re-writing the same axis is idempotent, and a full set_bounds (or
+  // creation bounds) over any state stays all-real: a Full webview that
+  // receives another single-axis write must not regress to Partial.
+  #[test]
+  fn single_axis_writes_never_regress_full() {
+    let mut state = WebviewAutoResizeState::default();
+    state.explicit = ohos_set_size_explicitness(state.explicit);
+    assert_eq!(
+      ohos_set_size_explicitness(state.explicit),
+      BoundsExplicitness::PartialSize
+    );
+    state.explicit = ohos_set_position_explicitness(state.explicit);
+    assert_eq!(state.explicit, BoundsExplicitness::Full);
+    assert_eq!(
+      ohos_set_size_explicitness(state.explicit),
+      BoundsExplicitness::Full
+    );
+    assert_eq!(
+      ohos_set_position_explicitness(state.explicit),
+      BoundsExplicitness::Full
+    );
+
+    // A Full webview (created with bounds) taking a lone set_size keeps its
+    // all-real cache: the position axis was real from creation.
+    let created_full = WebviewAutoResizeState {
+      rates: None,
+      parked: None,
+      explicit: BoundsExplicitness::Full,
+    };
+    assert_eq!(
+      ohos_set_size_explicitness(created_full.explicit),
+      BoundsExplicitness::Full
+    );
+    assert_eq!(
+      ohos_set_position_explicitness(created_full.explicit),
+      BoundsExplicitness::Full
     );
   }
 }
