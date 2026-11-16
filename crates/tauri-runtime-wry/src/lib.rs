@@ -6543,7 +6543,10 @@ struct WebviewAutoResizeState {
   rates: Option<WebviewBounds>,
   /// Rates parked at the last disable; restored by a later enable.
   parked: Option<WebviewBounds>,
-  /// Whether the wry bounds cache for this webview is fully real.
+  /// How real the wry bounds cache is, tracked per axis - `Natural` (both
+  /// axes hold the layout placeholder), `PartialSize`/`PartialPosition`
+  /// (one axis explicit), or `Full` (all-real): the four-state model of
+  /// issue Eulogizethesun/tauri#256.
   explicit: BoundsExplicitness,
 }
 
@@ -7887,7 +7890,9 @@ mod auto_resize_enable_decision_tests {
 
   // Re-writing the same axis is idempotent, and a full set_bounds (or
   // creation bounds) over any state stays all-real: a Full webview that
-  // receives another single-axis write must not regress to Partial.
+  // receives another single-axis write stays Full, never regressing to a
+  // per-axis partial state (PartialSize/PartialPosition, issue
+  // Eulogizethesun/tauri#256).
   #[test]
   fn single_axis_writes_never_regress_full() {
     let mut state = WebviewAutoResizeState::default();
