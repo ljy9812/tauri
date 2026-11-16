@@ -4021,6 +4021,16 @@ where
   let ohos_pending_close = runtime.context.ohos_pending_close.clone();
 
   move |event, event_loop, control_flow| {
+    // OHOS (issue Eulogizethesun/tauri#255): a failed destroy dispatch
+    // surfaces WITHOUT a confirmation -- tao accounts the OHOS window id in
+    // its destroy-failure twin queue and wakes the loop (no event on the
+    // event lane, design D3). Drain it here, before any event dispatch, so
+    // the stale in-flight close guard is already gone when the next USER
+    // CloseRequested is routed (the guard would otherwise misread it as the
+    // destruction loopback: no app-facing dispatch, accounting removed for a
+    // still-alive window).
+    #[cfg(target_env = "ohos")]
+    ohos_clear_failed_destroy_guards(&windows, &ohos_pending_close);
     for p in plugins.lock().unwrap().iter_mut() {
       let prevent_default = p.on_event(
         &event,
@@ -5681,7 +5691,11 @@ struct OhosCloseCtx<'a, T: UserEvent> {
   control_flow: &'a mut ControlFlow,
 }
 
-#[cfg(target_env = "ohos")]
+// The pending-close primitives exist on every target so the failure-drain
+// core below and its host UT share the exact take semantics (the runtime
+// callers are all OHOS-only; cfg_attr mirrors the host-testable OHOS helpers
+// further down).
+#[cfg_attr(not(target_env = "ohos"), allow(dead_code))]
 fn ohos_pending_close_insert(set: &Mutex<HashSet<WindowId>>, id: &WindowId) {
   set
     .lock()
@@ -5693,12 +5707,90 @@ fn ohos_pending_close_insert(set: &Mutex<HashSet<WindowId>>, id: &WindowId) {
 /// registration here (not peeking) is what keeps a duplicate loopback
 /// (`notifyWindowClose` fires from both the SubWindowPage button and
 /// `aboutToDisappear`) from re-entering the executor twice.
-#[cfg(target_env = "ohos")]
+#[cfg_attr(not(target_env = "ohos"), allow(dead_code))]
 fn ohos_pending_close_take(set: &Mutex<HashSet<WindowId>>, id: &WindowId) -> bool {
   set
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner())
     .remove(id)
+}
+
+/// OHOS failure-side complement of the in-flight close guard (issue
+/// Eulogizethesun/tauri#255): drains tao's destroy-failure twin queue and
+/// removes the stale pending-close registration of every reported window,
+/// BEFORE any event dispatch. When the destroy dispatch of a registered window
+/// fails, tao announces nothing on the event lane (design D3: failure =
+/// accounted, not announced): the OHOS window id lands in its twin queue
+/// (`tao::platform::ohos::drain_destroy_failures`) and the loop is woken. A
+/// guard left behind would misroute the next USER CloseRequested into the
+/// confirmation executor (no app-facing dispatch, accounting removed for a
+/// still-alive window) -- exactly the #255 bug.
+#[cfg(target_env = "ohos")]
+fn ohos_clear_failed_destroy_guards(
+  windows: &WindowsStore,
+  pending_close: &Mutex<HashSet<WindowId>>,
+) {
+  let failed_os_ids = tao::platform::ohos::drain_destroy_failures();
+  if failed_os_ids.is_empty() {
+    return;
+  }
+  let index = ohos_os_id_index(windows);
+  ohos_clear_pending_close_for_failures(pending_close, &index, &failed_os_ids);
+}
+
+/// Maps the runtime windows' store to their OHOS window ids -- the REVERSE of
+/// the close path's existing conversion point (`WindowExtOpenHarmony::
+/// window_id()`, cf. `ohos_dispatch_close_ohos`). There is no os-id ->
+/// runtime-id table (the runtime `WindowId` is a creation counter, the OHOS id
+/// comes from the bridge handshake; they only coincide for the id-0 root), so
+/// the small store is scanned per drain batch. A wrapper without a tao window
+/// or without a settled OHOS id yields no entry.
+#[cfg(target_env = "ohos")]
+fn ohos_os_id_index(windows: &WindowsStore) -> HashMap<i64, WindowId> {
+  use tao::platform::ohos::WindowExtOpenHarmony;
+
+  windows
+    .0
+    .borrow()
+    .iter()
+    .filter_map(|(id, w)| {
+      w.inner
+        .as_ref()
+        .and_then(|inner| inner.window_id())
+        .map(|os_id| (os_id, *id))
+    })
+    .collect()
+}
+
+/// Pure core of the failure drain: removes the in-flight close guard for every
+/// failed window resolvable through `index`. Take semantics only
+/// (`ohos_pending_close_take`): the stale marker is consumed and NO
+/// CloseRequested is dispatched -- the failed destroy left the window alive
+/// with all accounting intact, so a user close must reach the app fresh. A
+/// drained id with no index match clears nothing (the window already left the
+/// store: its confirmation ran, or it never entered), and a repeated report
+/// for the same window is a no-op -- the first take consumed the marker.
+/// Exists on every target for the host UT; callers are OHOS-only.
+#[cfg_attr(not(target_env = "ohos"), allow(dead_code))]
+fn ohos_clear_pending_close_for_failures(
+  pending_close: &Mutex<HashSet<WindowId>>,
+  index: &HashMap<i64, WindowId>,
+  failed_os_ids: &[i64],
+) {
+  for os_id in failed_os_ids {
+    let Some(runtime_id) = index.get(os_id) else {
+      log::info!(
+        "[wry] destroy dispatch failed for os_window {os_id}: no matching runtime window in the store -- nothing to clear"
+      );
+      continue;
+    };
+    if ohos_pending_close_take(pending_close, runtime_id) {
+      log::info!(
+        "[wry] destroy dispatch failed for os_window {os_id}: cleared the stale in-flight close guard for runtime window {} -- the next user close will be dispatched to the app",
+        runtime_id.as_u32()
+      );
+    }
+  }
 }
 
 /// OHOS variant of `on_close_requested`: the destruction INITIATOR side of the
@@ -5853,11 +5945,33 @@ fn ohos_main_window_close_gate<T: UserEvent>(
 /// confirmation. Idempotent against a window whose wrapper holds no tao window
 /// (no request can be issued -> no registration -> no confirmation expected).
 ///
-/// Known boundary: if tao's `close()` cannot dispatch (bridge client
-/// unavailable -- an app-wide degenerate state), the registration stays behind;
-/// the next real destruction loopback for that window then skips one app-facing
-/// dispatch. Accounting never diverges: the loopback only fires from a real
-/// destruction flow, so the executor's removal is truthful either way.
+/// Failure paths (issue Eulogizethesun/tauri#255): a failed dispatch must NOT
+/// leave the in-flight guard behind -- the next USER CloseRequested would be
+/// misread as the destruction loopback (no app-facing dispatch, accounting
+/// removed for a still-alive window). Every dispatch failure leg is handled:
+/// - no tao window in the wrapper: nothing issued, nothing registered (the
+///   early exit above);
+/// - window without a settled OHOS id: tao's `close()` is a log-only no-op
+///   there (nothing is dispatched and there is no id to key a destroy-failure
+///   record on -- 0 is the main window's REAL id, so no sentinel is safe; tao
+///   points the runtime at this exact observation site), so the initiator
+///   reads `window_id()` HERE and returns before registering -- no marker is
+///   ever created for that leg;
+/// - dispatch failure after registration (tao's close() legs (b) bridge client
+///   unavailable and (c) async resolve Err): tao accounts the OHOS window id
+///   in its destroy-failure twin queue (`tao::platform::ohos::
+///   drain_destroy_failures`) and wakes the loop; the event-loop prelude
+///   (`ohos_clear_failed_destroy_guards`) drains the queue and removes the
+///   stale guard before the next event dispatch.
+///
+/// Residual boundary: a failure is only observed on the NEXT event-loop
+/// iteration (the failure waker's wakeup, or any other event). A USER
+/// CloseRequested delivered inside that gap -- after the failed dispatch,
+/// before the drain runs -- can still be misread as the loopback ONCE (at
+/// most one event-loop cycle; later closes dispatch normally, and the drained
+/// failure for an already-consumed marker is a no-op). tao announces nothing
+/// on the event lane for failures (design D3), so inside the gap the runtime
+/// has no signal to tell the legs apart.
 #[cfg(target_env = "ohos")]
 fn ohos_initiate_destroy_ohos<T: UserEvent>(ctx: OhosCloseCtx<'_, T>, window_id: WindowId) {
   let inner = ctx
@@ -5869,12 +5983,24 @@ fn ohos_initiate_destroy_ohos<T: UserEvent>(ctx: OhosCloseCtx<'_, T>, window_id:
   let Some(inner) = inner else {
     return;
   };
-  ohos_pending_close_insert(&ctx.ohos_pending_close, &window_id);
   use tao::platform::ohos::WindowExtOpenHarmony;
-  log::info!(
-    "[wry] on_window_close: dispatching destroy_window ohos_id={:?}",
-    inner.window_id()
-  );
+  let Some(os_window_id) = inner.window_id() else {
+    // Issue Eulogizethesun/tauri#255, tao close() leg (a): without a settled
+    // OHOS id no destroy request can be issued (tao's close() would only
+    // log), so by this initiator's no-request-no-registration contract the
+    // in-flight guard must NOT be registered: a marker here could be
+    // confirmed neither by a loopback nor by the failure drain (no id was
+    // keyed on either side), and the next USER close would be misread as the
+    // destruction loopback. Same outcome as the holds-no-window early exit
+    // above.
+    log::warn!(
+      "[wry] on_window_close: runtime window {:?} has no OHOS id -- no destroy request can be dispatched, in-flight guard NOT registered",
+      window_id
+    );
+    return;
+  };
+  ohos_pending_close_insert(&ctx.ohos_pending_close, &window_id);
+  log::info!("[wry] on_window_close: dispatching destroy_window ohos_id={os_window_id}");
   inner.close();
 }
 
@@ -7796,6 +7922,98 @@ mod auto_resize_enable_decision_tests {
       ohos_set_position_explicitness(created_full.explicit),
       BoundsExplicitness::Full
     );
+  }
+}
+
+/// Issue Eulogizethesun/tauri#255: the failure-side clearing of the in-flight
+/// close guard. `ohos_clear_pending_close_for_failures` is the pure core
+/// (take-only semantics over the pending set, resolution through an explicit
+/// os-id index); the tao queue drain and the store scan (`ohos_clear_failed_
+/// destroy_guards`, `ohos_os_id_index`) are OHOS-only wiring that needs real
+/// tao windows and is review-verified, same split as the device-side registry
+/// and exit-gate modules below.
+#[cfg(test)]
+mod ohos_destroy_failure_guard_tests {
+  use super::*;
+
+  fn pending() -> Arc<Mutex<HashSet<WindowId>>> {
+    Arc::new(Mutex::new(HashSet::new()))
+  }
+
+  fn index_of(pairs: &[(i64, u32)]) -> HashMap<i64, WindowId> {
+    pairs
+      .iter()
+      .map(|(os, rt)| (*os, WindowId::from(*rt)))
+      .collect()
+  }
+
+  fn has(pending: &Arc<Mutex<HashSet<WindowId>>>, id: u32) -> bool {
+    pending
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .contains(&WindowId::from(id))
+  }
+
+  // The failed window's guard is consumed and NOTHING else is: a sibling
+  // window with its own in-flight destroy keeps its marker, so its loopback
+  // is still recognized as the confirmation.
+  #[test]
+  fn failure_clears_only_the_failed_window_guard() {
+    let pending = pending();
+    ohos_pending_close_insert(&pending, &WindowId::from(1));
+    ohos_pending_close_insert(&pending, &WindowId::from(2));
+    let index = index_of(&[(10, 1), (20, 2)]);
+
+    ohos_clear_pending_close_for_failures(&pending, &index, &[10]);
+
+    assert!(!has(&pending, 1));
+    assert!(has(&pending, 2));
+  }
+
+  // A drained id with no index match (window already gone: its confirmation
+  // ran, or the wrapper never entered the store) clears nothing -- in
+  // particular it must not fall back to any arithmetic id mapping.
+  #[test]
+  fn unknown_failed_os_id_clears_nothing() {
+    let pending = pending();
+    ohos_pending_close_insert(&pending, &WindowId::from(1));
+    let index = index_of(&[(10, 1)]);
+
+    ohos_clear_pending_close_for_failures(&pending, &index, &[99]);
+
+    assert!(has(&pending, 1));
+  }
+
+  // Take semantics: the marker is consumed exactly once, so a duplicated
+  // failure report (the same id drained again) clears nothing extra and can
+  // never re-arm a guard.
+  #[test]
+  fn repeated_failure_report_for_the_same_window_is_a_noop() {
+    let pending = pending();
+    ohos_pending_close_insert(&pending, &WindowId::from(1));
+    let index = index_of(&[(10, 1)]);
+
+    ohos_clear_pending_close_for_failures(&pending, &index, &[10]);
+    ohos_clear_pending_close_for_failures(&pending, &index, &[10]);
+
+    assert!(!has(&pending, 1));
+  }
+
+  // The runtime id is resolved through the os-id index, NOT arithmetic
+  // equality of the two id spaces: os id 10 maps to runtime window 4 here. A
+  // naive equality mapping would have cleared window 10's guard and left
+  // window 4's stale marker behind -- exactly the misroute of #255.
+  #[test]
+  fn resolution_goes_through_the_index_not_id_equality() {
+    let pending = pending();
+    ohos_pending_close_insert(&pending, &WindowId::from(4));
+    ohos_pending_close_insert(&pending, &WindowId::from(10));
+    let index = index_of(&[(10, 4)]);
+
+    ohos_clear_pending_close_for_failures(&pending, &index, &[10]);
+
+    assert!(has(&pending, 10)); // not the failed destroy's window: untouched
+    assert!(!has(&pending, 4)); // the failed destroy's window: cleared
   }
 }
 
