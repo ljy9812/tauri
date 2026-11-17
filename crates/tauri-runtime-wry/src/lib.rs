@@ -1913,6 +1913,13 @@ pub enum EventLoopWindowTargetMessage {
   CursorPosition(Sender<Result<PhysicalPosition<f64>>>),
   /// Sets the theme of the event loop.
   SetTheme(Option<Theme>),
+  /// Sets the theme of the event loop and hands it a receipt closure that the
+  /// deferred OHOS completion drain fires with the verdict (`true` applied /
+  /// `false` failed, with the override rolled back). OHOS only: the tao event
+  /// loop only accepts receipts on targets where the deferred
+  /// `setColorMode` completion exists.
+  #[cfg(target_env = "ohos")]
+  SetThemeWithReceipt(Option<Theme>, Box<dyn FnOnce(bool) + Send + 'static>),
   /// Sets the filter applied to device events.
   SetDeviceEventFilter(DeviceEventFilter),
 }
@@ -3511,6 +3518,25 @@ impl<T: UserEvent> RuntimeHandle<T> for WryHandle<T> {
       &self.context,
       Message::EventLoopWindowTarget(EventLoopWindowTargetMessage::SetTheme(theme)),
     );
+  }
+
+  /// OHOS only: routes the theme change plus its receipt to the event loop,
+  /// which registers the receipt BEFORE applying the theme so the deferred
+  /// ArkTS `setColorMode` completion can never miss it. The bare
+  /// `Box<dyn FnOnce(bool) + Send + 'static>` unifies with tao's
+  /// `ThemeReceipt` alias at the facade call.
+  #[cfg(target_env = "ohos")]
+  fn set_theme_with_receipt(
+    &self,
+    theme: Option<Theme>,
+    receipt: Box<dyn FnOnce(bool) + Send + 'static>,
+  ) -> tauri_runtime::Result<()> {
+    send_user_message(
+      &self.context,
+      Message::EventLoopWindowTarget(EventLoopWindowTargetMessage::SetThemeWithReceipt(
+        theme, receipt,
+      )),
+    )
   }
 
   #[cfg(target_os = "macos")]
@@ -5204,6 +5230,10 @@ fn handle_user_message<T: UserEvent>(
       }
       EventLoopWindowTargetMessage::SetTheme(theme) => {
         event_loop.set_theme(to_tao_theme(theme));
+      }
+      #[cfg(target_env = "ohos")]
+      EventLoopWindowTargetMessage::SetThemeWithReceipt(theme, receipt) => {
+        event_loop.set_theme_with_receipt(to_tao_theme(theme), receipt);
       }
       EventLoopWindowTargetMessage::SetDeviceEventFilter(filter) => {
         event_loop.set_device_event_filter(DeviceEventFilterWrapper::from(filter).0);

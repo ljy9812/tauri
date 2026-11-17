@@ -27,11 +27,11 @@ use url::Url;
 use windows::Win32::Foundation::HWND;
 
 use std::{
-  cell::RefCell,
+  cell::{Cell, RefCell},
   collections::HashMap,
   fmt,
   sync::{
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     mpsc::{channel, sync_channel, Receiver, SyncSender},
     Arc, Mutex,
   },
@@ -52,6 +52,41 @@ struct Window {
   webviews: Vec<Webview>,
 }
 
+/// How the mocked runtime behaves for the deferred theme receipt of the
+/// `set_app_theme` command (issue Eulogizethesun/tauri#264 command tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeReceiptMode {
+  /// No simulated verdict: the command dispatches to the real runtime path
+  /// (`RuntimeHandle::set_theme_with_receipt`, whose default implementation
+  /// applies the theme and fires the receipt with `true`).
+  Real,
+  /// The dispatch is simulated to deliver a failure verdict (`false`), the
+  /// way the OHOS runtime reports a failed deferred `setColorMode` tick.
+  Fail,
+  /// The dispatch is simulated to never deliver a verdict, the way a receipt
+  /// that is never drained starves the awaiting command side.
+  Hold,
+}
+
+thread_local! {
+  /// Per-test-thread receipt mode; `#[tokio::test]` futures run on a single
+  /// (current-thread) runtime, so each test observes its own mode without
+  /// cross-test interference.
+  static TEST_THEME_RECEIPT_MODE: Cell<ThemeReceiptMode> =
+    const { Cell::new(ThemeReceiptMode::Real) };
+}
+
+/// Selects how the `set_app_theme` command's runtime dispatch behaves in the
+/// current test thread. See [`ThemeReceiptMode`].
+pub fn set_theme_receipt_mode(mode: ThemeReceiptMode) {
+  TEST_THEME_RECEIPT_MODE.with(|cell| cell.set(mode));
+}
+
+/// Reads the receipt mode selected for the current test thread.
+pub fn theme_receipt_mode() -> ThemeReceiptMode {
+  TEST_THEME_RECEIPT_MODE.with(|cell| cell.get())
+}
+
 #[derive(Clone)]
 pub struct RuntimeContext {
   is_running: Arc<AtomicBool>,
@@ -62,6 +97,9 @@ pub struct RuntimeContext {
   next_webview_id: Arc<AtomicU32>,
   next_window_event_id: Arc<AtomicU32>,
   next_webview_event_id: Arc<AtomicU32>,
+  /// Number of `RuntimeHandle::set_theme` calls on handles sharing this
+  /// context.
+  set_theme_calls: Arc<AtomicUsize>,
 }
 
 // SAFETY: we ensure this type is only used on the main thread.
@@ -116,6 +154,14 @@ impl fmt::Debug for RuntimeContext {
 #[derive(Debug, Clone)]
 pub struct MockRuntimeHandle {
   context: RuntimeContext,
+}
+
+impl MockRuntimeHandle {
+  /// Number of `RuntimeHandle::set_theme` calls on handles sharing this
+  /// context.
+  pub fn set_theme_calls(&self) -> usize {
+    self.context.set_theme_calls.load(Ordering::Relaxed)
+  }
 }
 
 impl<T: UserEvent> RuntimeHandle<T> for MockRuntimeHandle {
@@ -263,7 +309,8 @@ impl<T: UserEvent> RuntimeHandle<T> for MockRuntimeHandle {
   }
 
   fn set_theme(&self, theme: Option<Theme>) {
-    unimplemented!()
+    self.context.set_theme_calls.fetch_add(1, Ordering::Relaxed);
+    let _ = theme;
   }
 
   /// Shows the application, but does not automatically focus it.
@@ -1207,6 +1254,7 @@ impl MockRuntime {
       next_webview_id: Default::default(),
       next_window_event_id: Default::default(),
       next_webview_event_id: Default::default(),
+      set_theme_calls: Default::default(),
     };
     Self {
       is_running,

@@ -516,6 +516,32 @@ impl<R: Runtime> AppHandle<R> {
       .map_err(Into::into)
   }
 
+  /// Sets the app theme and hands the runtime a receipt closure that reports
+  /// whether the change actually applied (`true`) or failed with the override
+  /// rolled back to follow-system (`false`).
+  ///
+  /// Mirrors `set_theme`: on Windows the native menus are themed first, then
+  /// the change is dispatched to the runtime. Unlike `set_theme` the runtime
+  /// dispatch result is propagated, so the caller can tell "never dispatched"
+  /// apart from a delivered change.
+  ///
+  /// On OHOS the wry runtime queues the receipt with the event loop and the
+  /// deferred ArkTS `setColorMode` tick fires it with the real verdict. On
+  /// every other platform the `RuntimeHandle` default implementation applies
+  /// the theme and fires the receipt immediately with `true`.
+  pub(crate) fn set_theme_with_receipt(
+    &self,
+    theme: Option<Theme>,
+    receipt: Box<dyn FnOnce(bool) + Send + 'static>,
+  ) -> crate::Result<()> {
+    #[cfg(windows)]
+    self.set_menu_theme_on_windows(theme);
+    self
+      .runtime_handle
+      .set_theme_with_receipt(theme, receipt)
+      .map_err(Into::into)
+  }
+
   /// Adds a Tauri application plugin.
   /// This function can be used to register a plugin that is loaded dynamically e.g. after login.
   /// For plugins that are created when the app is started, prefer [`Builder::plugin`].
@@ -971,13 +997,11 @@ macro_rules! shared_app_impl {
         })
       }
 
-      /// Sets the app theme.
-      ///
-      /// ## Platform-specific
-      ///
-      /// - **iOS / Android:** Unsupported.
-      pub fn set_theme(&self, theme: Option<Theme>) {
-        #[cfg(windows)]
+      /// Applies the theme to all native window menus. Windows only: win32
+      /// menus do not follow the event-loop theme automatically. Shared by
+      /// [`Self::set_theme`] and the receipted path below.
+      #[cfg(windows)]
+      fn set_menu_theme_on_windows(&self, theme: Option<Theme>) {
         for window in self.manager.windows().values() {
           if let (Some(menu), Ok(hwnd)) = (window.menu(), window.hwnd()) {
             let raw_hwnd = hwnd.0 as isize;
@@ -993,6 +1017,16 @@ macro_rules! shared_app_impl {
             });
           };
         }
+      }
+
+      /// Sets the app theme.
+      ///
+      /// ## Platform-specific
+      ///
+      /// - **iOS / Android:** Unsupported.
+      pub fn set_theme(&self, theme: Option<Theme>) {
+        #[cfg(windows)]
+        self.set_menu_theme_on_windows(theme);
         match self.runtime() {
           RuntimeOrDispatch::Runtime(h) => h.set_theme(theme),
           RuntimeOrDispatch::RuntimeHandle(h) => h.set_theme(theme),

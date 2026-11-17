@@ -213,6 +213,9 @@ async function defaultWindowIcon(): Promise<Image | null> {
  * #### Platform-specific
  *
  * - **iOS / Android:** Unsupported.
+ * - **OHOS:** the system color mode change is applied on a deferred ArkTS
+ *   tick. When that tick reports a failure, the promise rejects with an
+ *   error and the theme override is rolled back to follow the system theme.
  *
  * @since 2.0.0
  */

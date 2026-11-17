@@ -365,6 +365,31 @@ pub trait RuntimeHandle<T: UserEvent>: Debug + Clone + Send + Sync + Sized + 'st
   /// Sets the app theme.
   fn set_theme(&self, theme: Option<Theme>);
 
+  /// Sets the app theme and hands the runtime a receipt closure that reports
+  /// whether the change actually applied.
+  ///
+  /// The receipt is fired exactly once with the verdict of the theme change:
+  /// `true` applied, `false` failed (the theme override has already been
+  /// rolled back to follow the system theme by the time the receipt fires).
+  ///
+  /// Runtimes without a deferred completion mechanism apply the theme
+  /// synchronously, so the default implementation forwards to
+  /// [`RuntimeHandle::set_theme`] and fires the receipt with `true` right
+  /// away — fire-and-forget semantics, matching the previous behavior of the
+  /// JS `setTheme` caller on those platforms.
+  ///
+  /// The closure MUST swallow its own send failure: the awaiting command side
+  /// times out and drops its receiver, which is a normal, non-fatal outcome.
+  fn set_theme_with_receipt(
+    &self,
+    theme: Option<Theme>,
+    receipt: Box<dyn FnOnce(bool) + Send + 'static>,
+  ) -> Result<()> {
+    self.set_theme(theme);
+    receipt(true);
+    Ok(())
+  }
+
   /// Shows the application, but does not automatically focus it.
   #[cfg(target_os = "macos")]
   #[cfg_attr(docsrs, doc(cfg(target_os = "macos")))]
