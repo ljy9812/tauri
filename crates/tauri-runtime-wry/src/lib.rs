@@ -6796,6 +6796,19 @@ You may have it installed on another user account, but it is not available for t
     // This is required for the bridge-based webview backend (Phase B2).
     let bridge_runtime = window.bridge_runtime();
     webview_builder = webview_builder.with_bridge_runtime(bridge_runtime);
+    // Automatic element-fullscreen chain (Windows parity): when the page
+    // requests `requestFullscreen()` (ArkWeb `onFullScreenEnter`/`onFullScreenExit`),
+    // drive the hosting window fullscreen — same payload shape as the
+    // WebView2 `ContainsFullScreenElementChanged` hook below. See
+    // ohos-webview-fullscreen.
+    let proxy_clone = context.proxy.clone();
+    let window_id_ = window_id.clone();
+    webview_builder = webview_builder.with_fullscreen_changed_handler(move |entering: bool| {
+      let _ = proxy_clone.send_event(Message::Window(
+        *window_id_.lock().unwrap(),
+        WindowMessage::SetFullscreen(entering),
+      ));
+    });
   }
 
   if let Some(background_throttling) = webview_attributes.background_throttling {

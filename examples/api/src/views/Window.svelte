@@ -269,6 +269,19 @@
     await webviewMap[selectedWebview].setTheme(theme === 'auto' ? null : theme)
   }
 
+  // Drives the automatic element-fullscreen chain: on Windows and OHOS the
+  // runtime turns webview element fullscreen into window fullscreen without
+  // any frontend involvement (see ohos-webview-fullscreen).
+  let fullscreenTarget
+
+  async function enterElementFullscreen() {
+    await fullscreenTarget.requestFullscreen()
+  }
+
+  async function exitElementFullscreen() {
+    await document.exitFullscreen()
+  }
+
   async function updateProgressBar() {
     webviewMap[selectedWebview]?.setProgressBar({
       status: selectedProgressBarStatus,
@@ -483,6 +496,14 @@
         </form>
       </div>
     </div>
+    <div
+      bind:this={fullscreenTarget}
+      class="my-2 grid place-items-center border-2 border-dashed border-indigo-500 bg-indigo-100 text-indigo-900 py-6 font-bold cursor-pointer"
+      title="Click to exit fullscreen (also exits via document.exitFullscreen or ESC)"
+      onclick={exitElementFullscreen}
+    >
+      Element fullscreen target (requestFullscreen goes here)
+    </div>
     <div class="flex flex-wrap gap-2">
       <button
         class="btn"
@@ -523,6 +544,16 @@
         }}
       >
         Set focusable to {!focusable}
+      </button>
+      <button
+        class="btn"
+        title="Element fullscreen: drives the automatic window-fullscreen chain (Windows/OHOS)"
+        onclick={enterElementFullscreen}
+      >
+        Element Fullscreen
+      </button>
+      <button class="btn" title="Exits element fullscreen" onclick={exitElementFullscreen}>
+        Exit Element FS
       </button>
     </div>
     <div class="grid cols-[repeat(auto-fill,minmax(180px,1fr))]">
