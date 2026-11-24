@@ -6801,6 +6801,14 @@ You may have it installed on another user account, but it is not available for t
     // drive the hosting window fullscreen — same payload shape as the
     // WebView2 `ContainsFullScreenElementChanged` hook below. See
     // ohos-webview-fullscreen.
+    // Registered unconditionally (no WindowKind gate) — deliberate parity
+    // with the Windows `ContainsFullScreenElementChanged` hook below, which
+    // is likewise registered on every webview. Edge case: a Float/sub-window's
+    // window set_fullscreen may be rejected by the OS (tao side is warn-only);
+    // the failure path exists in code, whether it fires on device is
+    // unverified. The `lock().unwrap()` payload shape below is the same as
+    // the Windows handler / drag_drop handler (shared mutex-poisoning surface,
+    // pre-existing pattern).
     let proxy_clone = context.proxy.clone();
     let window_id_ = window_id.clone();
     webview_builder = webview_builder.with_fullscreen_changed_handler(move |entering: bool| {

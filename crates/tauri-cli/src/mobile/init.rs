@@ -391,6 +391,14 @@ fn srgb_luma(color: Color) -> f64 {
 /// background is configured the light-theme default (dark content,
 /// `#FF000000`) is used - matching the theme-following bar behavior of the
 /// unset case instead of guessing a theme we don't read.
+///
+/// Retained gap (pre-existing, disclosed not fixed): this is a
+/// generation-time value baked into the template, and the runtime theme
+/// chain has no SystemBarProperties update, so the bar content color does
+/// not follow OHOS dark mode / `setTheme` switches. With no
+/// `background_color` configured, the dark-content default can end up on a
+/// dark-mode bar background (the transparent bars let the dark theme show
+/// through) with reduced contrast until the app sets the color itself.
 fn system_bar_content_color(tauri_config: &Config) -> String {
   let bright = first_window_background_color(tauri_config)
     .map(|c| srgb_luma(c) > 0.5)

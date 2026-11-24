@@ -702,6 +702,12 @@ pub fn write_entry_device_types(
 /// Eulogizethesun/tauri#220). `None` (unset conf) leaves module.json5
 /// untouched, matching the `device_types` precedent for "not configured".
 ///
+/// An **empty array is a wholesale deletion too**: `requestPermissions = []`
+/// writes an empty block, wiping the scaffold baseline (INTERNET /
+/// SET_WINDOW_TRANSPARENT / PREPARE_APP_TERMINATE, plus the desktop-form
+/// extras) - network capability is silently lost. There is no "empty means
+/// keep the baseline" special case; only unset (`None`) preserves it.
+///
 /// These are OpenHarmony **OS** manifest permissions, orthogonal to Tauri's
 /// ACL/capabilities permissions (which gate IPC access to commands/plugins).
 pub fn write_entry_request_permissions(

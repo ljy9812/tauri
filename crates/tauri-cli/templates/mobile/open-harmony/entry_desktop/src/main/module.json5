@@ -74,9 +74,13 @@
       // (reason/usedScene + signing-profile ACL; non-PC/2in1 devices
       // additionally need the AGC restricted-permission review and only
       // special scenarios pass — prefer the PasteButton secure component,
-      // which needs no permission). See the project-root README.md for
-      // the durable copy of this guidance (the entry deviceTypes rewrite
-      // drops json5 comments on the first build).
+      // which needs no permission). CONFLICT WARNING: if the app also sets
+      // bundle.openHarmony.requestPermissions in tauri.conf.json, that list
+      // replaces this whole block on every build and any hand edit here
+      // (including a READ_PASTEBOARD addition) is silently reverted — put
+      // the permission in the config instead. See the project-root
+      // README.md for the durable copy of this guidance (the entry
+      // deviceTypes rewrite drops json5 comments on the first build).
       {{#if (eq form "desktop")}},
       {
         "name": "ohos.permission.WINDOW_TOPMOST"

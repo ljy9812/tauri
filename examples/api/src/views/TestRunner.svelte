@@ -4064,8 +4064,11 @@ Mutex released, no cascade deadlock: ${ok ? 'PASS ✅' : 'FAIL ❌'}`;
 
   // ── SOW Coverage 面板（Phase D，2026-11-10）──
   // 读 src/lib/tests/sow-registry.ts 账本，按 §一~§六 渲染四档 + excluded。
-  // 档位推导与 scripts/sow-check.mjs 同口径：✅=std 有 auto 真断言 或 有文档行；
-  // 🟡=仅 cov；⚠️=std 全 manual 锚且无文档行；❌=全空；⊘=plan excluded。
+  // 档位推导是面板自己的展示口径，**与 scripts/sow-check.mjs 的机检推导不同**
+  // （issue #20）：✅=std 有 auto 真断言 或 manual 锚数组非空——只查锚存在，
+  // 不读 manual_tests.md、不校验锚能否命中文档行；脚本的 ✅ 还要求 hasDoc
+  // 命中，悬空锚这里照样 ✅、机检门会红。🟡=cov 列表非空（且非 ✅）；
+  // ⚠️=std 引用存在但全非 auto 且 manual 锚数组为空；❌=全空；⊘=plan excluded。
   // 面板只做展示（读账本），机检门（引用存在性/计数对账/selftest 红臂）仍在
   // sow-check——页面内不重复校验。
   const stdCategoryMap = new Map();
@@ -4086,7 +4089,9 @@ Mutex released, no cascade deadlock: ${ok ? 'PASS ✅' : 'FAIL ❌'}`;
   }
 
   const SOW_TIER_BADGE = { ok: '✅', cov: '🟡', warn: '⚠️', missing: '❌', excluded: '⊘' };
-  const SOW_TIER_LABEL = { ok: '✅ 有 auto 真断言或文档行', cov: '🟡 仅 cov 盲调', warn: '⚠️ 仅 manual 锚无文档行', missing: '❌ 无证据', excluded: '⊘ excluded（有因登记）' };
+  // Labels state this panel's own derivation (not sow-check.mjs's machine
+  // gate): ok = auto assertion or manual anchor present, not "doc row".
+  const SOW_TIER_LABEL = { ok: '✅ 有 auto 真断言或 manual 锚', cov: '🟡 仅 cov 盲调', warn: '⚠️ std 引用全非 auto 且无 manual 锚', missing: '❌ 无证据', excluded: '⊘ excluded（有因登记）' };
 
   const sowTiered = sowRegistry.map((item) => ({ ...item, tier: sowTier(item) }));
   const sowSectionStats = SOW_SECTIONS.map((sec) => {

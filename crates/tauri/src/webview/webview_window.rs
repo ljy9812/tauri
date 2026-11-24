@@ -2331,11 +2331,14 @@ impl<R: Runtime> WebviewWindow<R> {
   /// ## Platform-specific
   ///
   /// - **OpenHarmony:** a `window.close()` call made by the web page itself
-  ///   (JS) is a no-op on the main window — ArkWeb delivers page close
-  ///   requests through the Web `onWindowExit` event, which the framework
-  ///   only registers for script-opened new-window dialogs (`window.open`
-  ///   targets). This API (and the JS `getCurrentWindow().close()`) does emit
-  ///   `WindowEvent::CloseRequested` and honors `prevent_close`.
+  ///   (JS, delivered through ArkWeb's Web `onWindowExit` event) routes
+  ///   through the same notify-only close chain this API uses: on
+  ///   sub-windows and spawned UIAbility windows (id > 0) it also emits
+  ///   `WindowEvent::CloseRequested` and honors `prevent_close`. On the
+  ///   bootstrap main window (id 0) the page-initiated close is a no-op --
+  ///   the destroy-window bridge refuses id 0, so no close chain is
+  ///   attached there. This API (and the JS `getCurrentWindow().close()`)
+  ///   emits `WindowEvent::CloseRequested` and honors `prevent_close`.
   pub fn close(&self) -> crate::Result<()> {
     self.window.close()
   }

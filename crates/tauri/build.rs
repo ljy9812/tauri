@@ -147,9 +147,11 @@ const PLUGINS: &[(&str, &[(&str, bool)])] = &[
       ("reparent", false),
       ("clear_all_browsing_data", false),
       ("set_webview_background_color", false),
-      // OHOS-only command (cfg(target_env = "ohos") in plugin.rs); the
-      // permission list is host-compiled so the entry is unconditional —
-      // inert on other targets, mirrors set_webview_background_color above.
+      // Registered on desktop + OHOS (`#[cfg(any(desktop, target_env = "ohos"))]`
+      // in webview/plugin.rs — not OHOS-only since 1c4a0f988 widened the cfg);
+      // the permission list is host-compiled so the entry is unconditional.
+      // On Android/iOS the command is not registered, so a grant there is
+      // inert — mirrors set_webview_background_color above.
       ("webview_reload", false),
       // internal
       ("internal_toggle_devtools", true),
