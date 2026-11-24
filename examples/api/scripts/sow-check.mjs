@@ -2,14 +2,16 @@
 // sow-check.mjs — SOW 能力清单 × 套件用例账目机检门（Phase A2，plan: sprightly-frolicking-stroustrup）
 //
 // 用法：
-//   node scripts/sow-check.mjs            # 全量校验（exit 0=绿，1=红）
+//   node scripts/sow-check.mjs            # 全量校验（exit 0=绿，1=红，2=降级跑非全绿口径）
 //   node scripts/sow-check.mjs --selftest # 变异红臂：5 个内置变异逐一必须令 verify 报错
 //   node scripts/sow-check.mjs --json out.json   # 附带 JSON 账目落盘
 //   node scripts/sow-check.mjs --final    # 严格档（三件套完整性由 WARN 升 FAIL，Phase D 勾销门）
+//   node scripts/sow-check.mjs --allow-degraded  # 显式接受降级跑（降级档且无 catalog 错误时才 exit 0）
 //
 // 求值主路径：glob 解析 esbuild（tauri\node_modules\.pnpm\esbuild@*）→ bundle 两个入口
 // （src/lib/tests/index.ts 契件 barrel + src/lib/tests/sow-registry.ts 注册表）→ CJS 内存求值。
 // esbuild 不可达时降级为正则提取（degraded:true，仅存在性检查；name 重复或数量=0 仍硬 FAIL）。
+// 降级档默认 fail-closed：exit 2（≠全绿口径），--allow-degraded 显式 opt-in 才 exit 0。
 //
 // 判定四档（推导，不手填）：✅=有 std 非 manual 锚 或 有文档行；🟡=仅 cov；⚠️=仅 manual 锚
 // 无文档行；❌=全空；plan.kind='excluded' 单列。对账目标 = SOW_BASELINE_1109（1109 审计）。
@@ -388,6 +390,7 @@ export async function main() {
 const args = process.argv.slice(2);
 const SELFTEST = args.includes('--selftest');
 const FINAL = args.includes('--final');
+const ALLOW_DEGRADED = args.includes('--allow-degraded');
 const jsonIdx = args.indexOf('--json');
 const jsonEq = args.find((a) => /^--json=/.test(a));
 const jsonOut = jsonEq
@@ -412,14 +415,27 @@ try {
     for (const t of list) catalog.push({ name: t.name, category: t.category, array: arr, layer: STD_ARRAYS.includes(arr) ? 'std' : 'cov' });
   }
 } catch (e) {
-  console.error(`[sow-check] 主路径失败，降级正则模式（degraded）: ${e.message}`);
+  console.error(`[sow-check] DEGRADED 主路径失败，降级正则模式: ${e.message}`);
   degraded = true;
   catalog = regexExtractTests();
   // 降级下注册表用正则抽不出（TS 字面量嵌套结构复杂）→ 只做 catalog 自身完整性
   const dupCheck = verify({ registry: [], expectedCounts: {}, baseline: { ok: 0, covOnly: 0, manualOnly: 0, missing: 0, excluded: 0 }, catalog, docRows: [], wrapManualNames: new Set() });
-  console.log(`degraded:true 条目=${catalog.length} 重复name=${dupCheck.errors.filter((x) => x.startsWith('[catalog]')).length}`);
-  const c0 = catalog.length === 0;
-  process.exit(c0 || dupCheck.errors.some((x) => x.includes('重复')) ? 1 : 0);
+  // 结构化降级信号（稳定键值行；错误按 [catalog] 结构前缀计数，不耦合错误文案）
+  const catalogErrors = dupCheck.errors.filter((x) => x.startsWith('[catalog]'));
+  console.log(`DEGRADED=true catalog=${catalog.length} catalogErrors=${catalogErrors.length}`);
+  for (const err of catalogErrors) console.log('  ' + err);
+  if (SELFTEST) {
+    // 变异红臂必须走 bundle 主路径，降级档根本没跑——不接受 --allow-degraded 假绿
+    console.error('[sow-check] --selftest 需要主路径（bundle 求值），降级档无法执行变异红臂 → exit 1');
+    process.exit(1);
+  }
+  if (catalog.length === 0 || catalogErrors.length > 0) process.exit(1);
+  if (ALLOW_DEGRADED) {
+    console.log('DEGRADED accepted via --allow-degraded → exit 0（仅 catalog 存在性检查；注册表/引用/基线/四档均未校验）');
+    process.exit(0);
+  }
+  console.error('[sow-check] 降级跑非全绿口径（仅 catalog 存在性检查；注册表/引用/基线/四档均未校验）→ exit 2。确需接受降级跑请加 --allow-degraded。');
+  process.exit(2);
 }
 
 const mtdText = fs.readFileSync(MTD_PATH, 'utf8');
