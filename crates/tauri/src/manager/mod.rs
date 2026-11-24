@@ -340,6 +340,14 @@ impl<R: Runtime> AppManager<R> {
     if cfg!(windows) || cfg!(target_os = "android") {
       let scheme = if https { "https" } else { "http" };
       Cow::Owned(Url::parse(&format!("{scheme}://tauri.localhost")).unwrap())
+    } else if cfg!(target_env = "ohos") && https {
+      // OHOS: when the app enables `use_https_scheme`, wry rewrites the webview
+      // URL and reports the IPC request origin as `https://tauri.localhost`
+      // (the flag is forwarded via `with_https_scheme`), so the comparison URL
+      // must use the same form. Otherwise `is_local_url` classifies every
+      // invoke of such an app as `Origin::Remote` and plugin / app-ACL
+      // commands are denied by default.
+      Cow::Owned(Url::parse("https://tauri.localhost").unwrap())
     } else {
       Cow::Owned(Url::parse("tauri://localhost").unwrap())
     }

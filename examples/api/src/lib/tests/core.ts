@@ -460,9 +460,11 @@ export const coreTests: TestCase[] = [
     name: '@tauri-apps/api/app.defaultWindowIcon',
     category: 'auto',
     async fn() {
+      // 本 app bundle.icon 实配多项，codegen 对所有平台恒产 Some（CachedIcon::new 失败
+      // 等价 generate_context! 编译错误）→ null 只剩运行时/IPC 回归一种来源，直接判失败。
       const icon = await defaultWindowIcon();
-      if (icon === null) return; // 合同双臂：无默认图标（icon 未配置）即 null
-      assert(typeof icon.rid === 'number' && icon.rid > 0, `expected Image with rid>0 or null, got rid=${icon.rid}`);
+      assert(icon !== null, 'defaultWindowIcon should resolve to an Image (bundle.icon is configured), got null');
+      assert(typeof icon.rid === 'number' && icon.rid > 0, `expected Image with rid>0, got rid=${icon.rid}`);
       const size = await icon.size();
       assert(size.width > 0 && size.height > 0, `icon size should be positive, got ${size.width}x${size.height}`);
     },
@@ -724,12 +726,11 @@ export const coreTests: TestCase[] = [
     category: 'auto',
     async fn() {
       await skipOnMobile('the primaryMonitor window command is upstream cfg(desktop) and absent from the mobile build');
-      // S1-073「获取主显示器」：null-or-合法契约（OHOS 可能不报 primary——null 不假失败）
+      // S1-073「获取主显示器」：上游 API 契约允许 null，但 OHOS 现实现恒 Some
+      // （tao 双实现均 Some(primary_for_app)，default_display 失败退 0 不返 None）
+      // → 本平台 null 结构性不可达，null 臂收紧为断言失败（与 currentMonitor 同型）。
       const monitor = await primaryMonitor();
-      if (monitor === null || monitor === undefined) {
-        // 契约允许：无主显示器概念时返回 null（不硬失败）
-        return;
-      }
+      assert(monitor !== null && monitor !== undefined, 'primaryMonitor returned null (OHOS always reports a primary monitor)');
       assert(typeof monitor.size.width === 'number' && monitor.size.width > 0, `monitor.size.width should be positive, got ${monitor.size.width}`);
       assert(typeof monitor.size.height === 'number' && monitor.size.height > 0, `monitor.size.height should be positive, got ${monitor.size.height}`);
       assert(typeof monitor.scaleFactor === 'number' && monitor.scaleFactor > 0, `monitor.scaleFactor should be positive, got ${monitor.scaleFactor}`);
@@ -752,10 +753,9 @@ export const coreTests: TestCase[] = [
         await win.setTitle(marker);
         await new Promise((r) => setTimeout(r, 300));
         const read = await win.title();
-        if (read !== '') {
-          assert(read === marker, `title() should read back "${marker}" after setTitle, got "${read}"`);
-        }
-        // read === ''：缓存从未写过——本用例前置 setTitle 已写过，出现即回归
+        // 无 if 门兜底：read==='' 即缓存从未写过（本用例前置 setTitle 已必然写过），
+        // 空串与旧值都是回归信号，全等断言直接判失败
+        assert(read === marker, `title() should read back "${marker}" after setTitle, got "${read}"`);
       } finally {
         try { await win.setTitle(original); } catch { /* restore best-effort */ }
       }
