@@ -760,14 +760,22 @@ pub fn request_permissions_json(
   .context("failed to serialize requestPermissions")
 }
 
-/// Fail-fast validation of the configured `requestPermissions`: every entry's
-/// `name` must be an `ohos.permission.*` grant. No grant-mode table is
-/// enforced here - the OS/AGC signing profile is the arbiter of which
-/// permissions are grantable, and the error names the offending value (issue
-/// Eulogizethesun/tauri#220).
+/// Fail-fast validation of the configured `requestPermissions`:
+/// - every entry's `name` must be an `ohos.permission.*` grant;
+/// - names must be unique across the list;
+/// - the object form's `reason` must be non-empty and `usedScene.when` must be
+///   `inuse` or `always`.
+///
+/// No grant-mode table is enforced here - the OS/AGC signing profile is the
+/// arbiter of which permissions are grantable, and the error names the
+/// offending value (issue Eulogizethesun/tauri#220). The `when`/reason axes
+/// are checked here and not by the toolchain: hvigor only verifies field
+/// presence for user_grant permissions, so a bogus `when` or empty `reason`
+/// would otherwise surface silently at app-market review.
 pub fn validate_request_permissions(
   permissions: &[tauri_utils::config::OhosRequestPermission],
 ) -> Result<()> {
+  let mut seen = std::collections::HashSet::new();
   for permission in permissions {
     let name = permission.name();
     if !name.starts_with("ohos.permission.") {
@@ -775,6 +783,27 @@ pub fn validate_request_permissions(
         "invalid requestPermissions entry `{}`: permission names must start with `ohos.permission.` (issue Eulogizethesun/tauri#220)",
         name
       );
+    }
+    if !seen.insert(name) {
+      bail!(
+        "invalid requestPermissions entry `{}`: duplicate permission name - each permission may only be requested once (issue Eulogizethesun/tauri#220)",
+        name
+      );
+    }
+    if let tauri_utils::config::OhosRequestPermission::Detailed(detail) = permission {
+      if detail.reason.trim().is_empty() {
+        bail!(
+          "invalid requestPermissions entry `{}`: the object form requires a non-empty `reason` string resource for user_grant permissions (issue Eulogizethesun/tauri#220)",
+          name
+        );
+      }
+      if !matches!(detail.used_scene.when.as_str(), "inuse" | "always") {
+        bail!(
+          "invalid requestPermissions entry `{}`: `usedScene.when` must be `inuse` or `always`, got `{}` (issue Eulogizethesun/tauri#220)",
+          name,
+          detail.used_scene.when
+        );
+      }
     }
   }
   Ok(())
@@ -1450,6 +1479,67 @@ mod tests {
       },
     });
     assert!(validate_request_permissions(&bad_detail).is_err());
+  }
+
+  #[test]
+  fn request_permissions_validation_rejects_duplicate_names() {
+    let dup = vec![
+      Permission::Name("ohos.permission.INTERNET".into()),
+      Permission::Name("ohos.permission.INTERNET".into()),
+    ];
+    let err = validate_request_permissions(&dup).unwrap_err().to_string();
+    assert!(
+      err.contains("duplicate"),
+      "must state the duplication: {err}"
+    );
+    // the same name in two different config forms is still a duplicate
+    let mixed = vec![
+      Permission::Name("ohos.permission.INTERNET".into()),
+      Permission::Detailed(OhosRequestPermissionDetail {
+        name: "ohos.permission.INTERNET".into(),
+        reason: "$string:reason_x".into(),
+        used_scene: OhosRequestPermissionUsedScene {
+          abilities: vec!["EntryAbility".into()],
+          when: "inuse".into(),
+        },
+      }),
+    ];
+    assert!(validate_request_permissions(&mixed).is_err());
+  }
+
+  #[test]
+  fn request_permissions_validation_rejects_empty_reason_and_bogus_when() {
+    let empty_reason = vec![Permission::Detailed(OhosRequestPermissionDetail {
+      name: "ohos.permission.READ_PASTEBOARD".into(),
+      reason: "   ".into(),
+      used_scene: OhosRequestPermissionUsedScene {
+        abilities: vec!["EntryAbility".into()],
+        when: "inuse".into(),
+      },
+    })];
+    let err = validate_request_permissions(&empty_reason)
+      .unwrap_err()
+      .to_string();
+    assert!(
+      err.contains("non-empty `reason`"),
+      "must state the empty reason: {err}"
+    );
+
+    let bogus_when = vec![Permission::Detailed(OhosRequestPermissionDetail {
+      name: "ohos.permission.READ_PASTEBOARD".into(),
+      reason: "$string:reason_clipboard".into(),
+      used_scene: OhosRequestPermissionUsedScene {
+        abilities: vec!["EntryAbility".into()],
+        when: "bogus".into(),
+      },
+    })];
+    let err = validate_request_permissions(&bogus_when)
+      .unwrap_err()
+      .to_string();
+    assert!(
+      err.contains("`inuse` or `always`") && err.contains("bogus"),
+      "must name the enum and the offending value: {err}"
+    );
   }
 
   /// A minimal generated project tree around the

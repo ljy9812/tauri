@@ -3301,8 +3301,38 @@ pub struct OpenHarmonyConfig {
   /// from Tauri's ACL/capabilities permissions, which govern IPC access to
   /// Tauri commands and plugins, not OS API access. Runtime OS-permission
   /// queries are a plugin concern (see plugins-workspace PR #15).
-  #[serde(alias = "request-permissions", default)]
+  #[serde(
+    alias = "request-permissions",
+    default,
+    deserialize_with = "deserialize_ohos_request_permissions"
+  )]
   pub request_permissions: Option<Vec<OhosRequestPermission>>,
+}
+
+/// Field-level deserializer for `bundle.openHarmony.requestPermissions`:
+/// wraps each entry's error with its list index (`requestPermissions[2]: ...`).
+/// Config parse errors carry no line/column info (the json5 error has none),
+/// so the index is the only "which entry" locator a config author gets (review
+/// tauri#262 item 5). `null` still maps to `None`, matching the derived
+/// `Option<Vec<_>>` behavior this replaces.
+fn deserialize_ohos_request_permissions<'de, D>(
+  deserializer: D,
+) -> Result<Option<Vec<OhosRequestPermission>>, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  let raw = Option::<Vec<JsonValue>>::deserialize(deserializer)?;
+  let Some(raw) = raw else {
+    return Ok(None);
+  };
+  let mut list = Vec::with_capacity(raw.len());
+  for (index, value) in raw.into_iter().enumerate() {
+    list.push(
+      OhosRequestPermission::deserialize(&value)
+        .map_err(|error| DeError::custom(format_args!("requestPermissions[{index}]: {error}")))?,
+    );
+  }
+  Ok(Some(list))
 }
 
 /// Per-form OHOS device types. Each list drives one Entry HAP's `module.json5`
@@ -3343,7 +3373,13 @@ fn default_desktop_device_types() -> Vec<String> {
 /// Eulogizethesun/tauri#220): either a bare permission name (system_grant) or
 /// the object form carrying `reason` and `usedScene` (user_grant), mirroring
 /// the scaffold's `ohos.permission.PRINT` entry shape.
-#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
+///
+/// `Deserialize` is hand-written (same shape as [`CapabilityEntry`]) instead
+/// of the derived `untagged` form: the derived version collapses every
+/// failure into "data did not match any variant of untagged enum", and config
+/// parse errors carry no line/column info (json5), so the error must name the
+/// offending field itself to be locatable (review tauri#262 item 5).
+#[derive(Debug, PartialEq, Eq, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "camelCase", untagged)]
 pub enum OhosRequestPermission {
@@ -3352,6 +3388,33 @@ pub enum OhosRequestPermission {
   /// A user_grant permission with its `reason` string resource and usage
   /// scene.
   Detailed(OhosRequestPermissionDetail),
+}
+
+impl<'de> Deserialize<'de> for OhosRequestPermission {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    UntaggedEnumVisitor::new()
+      .expecting(
+        "a permission name string (system_grant) or an object with \
+         name/reason/usedScene (user_grant)",
+      )
+      .string(|name| Ok(Self::Name(name.to_owned())))
+      .map(|map| {
+        map
+          .deserialize::<OhosRequestPermissionDetail>()
+          .map(Self::Detailed)
+          .map_err(|error| {
+            DeError::custom(format_args!(
+              "invalid requestPermissions object entry: {error}; the object form \
+               requires {{name, reason, usedScene: {{abilities, when}}}} (or use \
+               the bare string form \"ohos.permission.X\")"
+            ))
+          })
+      })
+      .deserialize(deserializer)
+  }
 }
 
 impl OhosRequestPermission {
@@ -4943,6 +5006,64 @@ mod test {
     assert!(
       !serialized.contains("requestPermissions"),
       "unset requestPermissions must not serialize: {serialized}"
+    );
+  }
+
+  #[test]
+  fn open_harmony_request_permissions_error_names_entry_and_field() {
+    // Object form missing `reason`: json5/serde parse errors carry no line
+    // numbers, so the error must locate the entry (index) and the missing
+    // field itself instead of the opaque untagged-enum message (review
+    // tauri#262 item 5).
+    let err = serde_json::from_str::<OpenHarmonyConfig>(
+      r#"{
+        "requestPermissions": [
+          "ohos.permission.INTERNET",
+          { "name": "ohos.permission.READ_PASTEBOARD",
+            "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" } }
+        ]
+      }"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+      err.contains("requestPermissions[1]"),
+      "error must name the entry index: {err}"
+    );
+    assert!(
+      err.contains("reason"),
+      "error must name the missing field: {err}"
+    );
+
+    // A misspelled field is named too (deny_unknown_fields on the object form).
+    let err = serde_json::from_str::<OpenHarmonyConfig>(
+      r#"{
+        "requestPermissions": [
+          { "name": "ohos.permission.X", "reason": "$string:r",
+            "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" },
+            "usedScenne": { "abilities": [], "when": "inuse" } }
+        ]
+      }"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+      err.contains("usedScenne"),
+      "error must name the unknown field: {err}"
+    );
+
+    // A wrong-shaped entry (neither string nor object) states both accepted
+    // shapes instead of the untagged collapse.
+    let err = serde_json::from_str::<OpenHarmonyConfig>(r#"{ "requestPermissions": [42] }"#)
+      .unwrap_err()
+      .to_string();
+    assert!(
+      err.contains("requestPermissions[0]"),
+      "error must name the entry index: {err}"
+    );
+    assert!(
+      err.contains("permission name string"),
+      "error must state the accepted shapes: {err}"
     );
   }
 }

@@ -78,12 +78,24 @@ export async function bundleEval(entryPath, esbuildPath) {
 }
 
 // ─── 2. 正则降级提取（esbuild 不可达时；仅 names，无 category → 降级账目） ───
+// 文件名→数组名的驼峰派生对 4 个文件失配（index.ts 真源导出名与此不同）：
+// driver-generated.ts→driverTests、fault-injection-generated.ts→faultInjectionTests、
+// plugins.ts→pluginTests、ohos-mobile-plugins.ts→ohosMobilePluginTests。
+// 降级档的 array 仅作元数据展示，但错名会让降级账目对不上 cov 数组名，逐个显式映射。
+const ARRAY_NAME_OVERRIDES = {
+  'driver-generated.ts': 'driverTests',
+  'fault-injection-generated.ts': 'faultInjectionTests',
+  'plugins.ts': 'pluginTests',
+  'ohos-mobile-plugins.ts': 'ohosMobilePluginTests',
+};
+
 function regexExtractTests() {
   const catalog = [];
   for (const file of fs.readdirSync(TESTS_DIR).filter((f) => f.endsWith('.ts') && !f.startsWith('sow-registry'))) {
     const text = fs.readFileSync(path.join(TESTS_DIR, file), 'utf8');
     const layer = /driver-generated|fault-injection|window-ops-extra|api-gap/.test(file) ? 'cov' : 'std';
-    const arrayName = file.replace(/\.ts$/, '').replace(/-([a-z])/g, (m, c) => c.toUpperCase()) + 'Tests';
+    const arrayName = ARRAY_NAME_OVERRIDES[file]
+      ?? file.replace(/\.ts$/, '').replace(/-([a-z])/g, (m, c) => c.toUpperCase()) + 'Tests';
     // 顶格 name: '...'（demo-case-counts 计数坑#3：以此行为准）
     const re = /^ {4}name: '((?:[^'\\]|\\.)*)'/gm;
     let m;
@@ -366,7 +378,12 @@ function mutate(registry, kind) {
     return { desc: '改坏一个 std 锚', registry: reg };
   }
   if (kind === 'dup-id') {
-    reg[10].id = reg[9].id;
+    // 动态取一对相邻且 id 不同的条目，不再硬编码下标（注册表缩到 <2 条或相邻
+    // id 全同时显式抛错——main().catch 也会接住标红，但 TypeError 的诊断信息
+    // 指不出「注册表缩水」这个真实原因）。
+    const idx = reg.findIndex((x, i) => i > 0 && x.id !== reg[i - 1].id);
+    if (idx <= 0) throw new Error('dup-id mutation needs >=2 registry entries with distinct adjacent ids');
+    reg[idx].id = reg[idx - 1].id;
     return { desc: '复制 id', registry: reg };
   }
   if (kind === 'null-reason') {

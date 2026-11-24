@@ -146,7 +146,9 @@ thread_local! {
 /// `Fail`/`Hold` simulate the OHOS runtime delivering a failure verdict /
 /// starving the receipt; the simulation lives here and not in a mock
 /// `RuntimeHandle` override because an override would shadow the very trait
-/// default body the `Real` path exercises.
+/// default body the `Real` path exercises. `DispatchError`/`DropReceipt`
+/// simulate the two runtime-side loss modes the command has fallback arms for
+/// (dispatch itself failing / receipt accepted then dropped without firing).
 #[cfg(test)]
 fn dispatch_theme_with_receipt<R: Runtime>(
   app: &AppHandle<R>,
@@ -160,6 +162,20 @@ fn dispatch_theme_with_receipt<R: Runtime>(
     }
     crate::test::ThemeReceiptMode::Hold => {
       TEST_PARKED_RECEIPTS.with(|cell| cell.borrow_mut().push(receipt));
+      Ok(())
+    }
+    crate::test::ThemeReceiptMode::DispatchError => {
+      // The production shape of this arm is `AppHandle::set_theme_with_receipt`
+      // returning `Err` (e.g. a closed event loop). The receipt never reaches
+      // a runtime, so the oneshot sender dies with it.
+      Err(crate::Error::FailedToReceiveMessage)
+    }
+    crate::test::ThemeReceiptMode::DropReceipt => {
+      // A runtime that accepts the receipt and then dies without firing it:
+      // dropping the closure drops the oneshot sender inside it, which
+      // resolves the command's receiver with `RecvError` immediately —
+      // distinct from `Hold`, which parks the sender alive until timeout.
+      drop(receipt);
       Ok(())
     }
     crate::test::ThemeReceiptMode::Real => {
@@ -368,6 +384,63 @@ mod tests {
       receipt_handle(&app).set_theme_calls(),
       1,
       "the receipted path must still dispatch the theme change to the runtime"
+    );
+  }
+
+  /// Drives the command's dispatch-`Err` arm (warn + legacy fire-and-forget
+  /// `Ok`): one of the two fallback arms that had no UT coverage (review
+  /// tauri#262 item 12 correction — a mutation deleting or erroring this arm
+  /// has no other red guard).
+  #[tokio::test]
+  async fn set_app_theme_keeps_ok_when_dispatch_fails() {
+    set_theme_receipt_mode(ThemeReceiptMode::DispatchError);
+    TEST_SET_APP_THEME_RECEIPT_TIMEOUT_MS.set(50);
+
+    let app = mock_app();
+    let result = set_app_theme(app.app_handle().clone(), Some(Theme::Dark)).await;
+
+    assert!(
+      result.is_ok(),
+      "a failed dispatch must keep the legacy fire-and-forget Ok semantics: {result:?}"
+    );
+    assert_eq!(
+      receipt_handle(&app).set_theme_calls(),
+      0,
+      "a failed dispatch must not reach the runtime (0 calls distinguishes \
+       this arm from a seam that silently fell through to the Real mode)"
+    );
+  }
+
+  /// Drives the command's receipt-dropped arm (`Ok(Err(_))`, the oneshot
+  /// `RecvError`): the command must resolve `Ok` immediately instead of
+  /// waiting out the receipt timeout or surfacing the dropped channel. The
+  /// second fallback arm without UT coverage (review tauri#262 item 12).
+  #[tokio::test]
+  async fn set_app_theme_keeps_ok_when_receipt_is_dropped_without_verdict() {
+    set_theme_receipt_mode(ThemeReceiptMode::DropReceipt);
+    // A long timeout makes the elapsed discriminator real: the dropped
+    // receipt resolves immediately through `RecvError`; a seam that parks
+    // instead of dropping would hit the 2s timeout arm and fail below.
+    TEST_SET_APP_THEME_RECEIPT_TIMEOUT_MS.set(2_000);
+
+    let app = mock_app();
+    let started = Instant::now();
+    let result = set_app_theme(app.app_handle().clone(), Some(Theme::Dark)).await;
+    let elapsed = started.elapsed();
+
+    assert!(
+      result.is_ok(),
+      "a receipt dropped without a verdict must keep the legacy Ok semantics: {result:?}"
+    );
+    assert_eq!(
+      TEST_LAST_RECEIPT_VERDICT.with(|cell| *cell.borrow()),
+      None,
+      "no verdict may be recorded — the receipt was dropped, not fired"
+    );
+    assert!(
+      elapsed < Duration::from_millis(400),
+      "the dropped receipt must resolve via RecvError immediately (took {elapsed:?}); \
+       waiting the injected 2s timeout means the command hit the timeout arm instead"
     );
   }
 }

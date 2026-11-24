@@ -129,6 +129,91 @@ jobs:
       - name: cargo check (tauri)
         run: cargo check --target ${{ matrix.target }} --all-targets --manifest-path crates/tauri/Cargo.toml
 
+      - name: cargo check (tauri-cli)
+        # tauri-cli is not in test-core.yml's paths (excluded there) and had no
+        # CI check at all — this is its only compile surface.
+        run: cargo check --target ${{ matrix.target }} --manifest-path crates/tauri-cli/Cargo.toml
+
+  # ═══════════════════════════════════════════════════
+  # ② OHOS target compile check (aarch64-unknown-linux-ohos)
+  # The host matrix above never type-checks cfg(target_env = "ohos") code —
+  # OHOS-only regressions (cfg typos, missing not(target_env = "ohos")
+  # exclusions, OHOS-gated test modules) reach a green CI. This target is
+  # Tier 2 (rustup ships its std) and `cargo check` needs no linker or OHOS
+  # SDK sysroot, so it runs on the plain ubuntu host. Sibling checkout and
+  # step layout mirror host-compile-check above.
+  # The default-feature tauri check below pulls tauri-runtime-wry → wry
+  # (sibling checkout pins the coordinated PR head, so wry's ohos module is
+  # part of this compile face) — the full runtime chain, not just tauri's
+  # own OHOS-gated code.
+  # ═══════════════════════════════════════════════════
+  ohos-target-check:
+    name: OHOS Target Check (aarch64-ohos)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout sibling repos for [patch] resolution
+        shell: bash
+        env:
+          PR_HEAD_OWNER: ${{ github.event.pull_request.head.repo.owner.login || '' }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+        run: |
+          # Same sibling set and branch-selection rule as the host-compile-check
+          # job above: full [patch] path set + plugins-workspace and
+          # sentry-tauri (examples' path deps), coordinated PR head first,
+          # Eulogizethesun@ohdev fallback, fatal on failure.
+          SIBLINGS=(
+            "wry"
+            "tao"
+            "muda"
+            "tray-icon"
+            "openharmony-ability"
+            "cargo-mobile2"
+            "window-vibrancy"
+            "plugins-workspace"
+            "sentry-tauri"
+          )
+          for name in "${SIBLINGS[@]}"; do
+            echo "::group::Checkout $name"
+            if [ -n "$PR_HEAD_OWNER" ] && [ -n "$PR_HEAD_REF" ] && \
+               git clone --depth 1 --branch "$PR_HEAD_REF" \
+                 "https://github.com/${PR_HEAD_OWNER}/${name}.git" "../${name}" 2>/dev/null; then
+              echo "checked out ${PR_HEAD_OWNER}/${name}@${PR_HEAD_REF} (coordinated PR head)"
+            elif git clone --depth 1 --branch ohdev \
+                 "https://github.com/Eulogizethesun/${name}.git" "../${name}" 2>/dev/null; then
+              echo "checked out Eulogizethesun/${name}@ohdev (fallback)"
+            else
+              echo "::error::Failed to clone sibling ${name} (tried ${PR_HEAD_OWNER:-?}/${name}@${PR_HEAD_REF:-?}, then Eulogizethesun/${name}@ohdev) — [patch]/path dependencies cannot resolve without it"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-ohos
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gate1-ohos-target
+
+      - name: cargo check (tauri-utils, OHOS target)
+        run: cargo check --target aarch64-unknown-linux-ohos --all-targets --manifest-path crates/tauri-utils/Cargo.toml
+
+      - name: cargo check (tauri, OHOS target)
+        # Default features pull tauri-runtime-wry → wry, so this step
+        # type-checks the full runtime chain under cfg(target_env = "ohos"),
+        # not just tauri's own OHOS-gated code (including the mobile cfg
+        # surface).
+        run: cargo check --target aarch64-unknown-linux-ohos --manifest-path crates/tauri/Cargo.toml
+
+      - name: cargo check (tauri, OHOS target, no default features)
+        # Complementary feature axis: tauri without the wry feature — the
+        # cfg surface that only compiles when the runtime feature is off.
+        run: cargo check --target aarch64-unknown-linux-ohos --no-default-features --manifest-path crates/tauri/Cargo.toml
+
   # ═══════════════════════════════════════════════════
   # ⑤ Host unit tests (Linux)
   # ═══════════════════════════════════════════════════
@@ -495,7 +580,7 @@ jobs:
   # ═══════════════════════════════════════════════════
   gate1-summary:
     name: Gate 1 Summary
-    needs: [host-compile-check, host-tests, ohos-pattern-lint, jsimage-sync-check, claude-review]
+    needs: [host-compile-check, host-tests, ohos-target-check, ohos-pattern-lint, jsimage-sync-check, claude-review]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -516,7 +601,7 @@ jobs:
 
             // Filter Gate 1 related jobs
             const gate1Prefixes = [
-              'Host Compile', 'Host Tests',
+              'Host Compile', 'Host Tests', 'OHOS Target Check',
               'OHOS Pattern Lint', 'JsImage Variant Sync', 'Claude Code Review'
             ];
             const relevant = checks.check_runs.filter(c =>

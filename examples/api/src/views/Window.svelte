@@ -275,11 +275,28 @@
   let fullscreenTarget
 
   async function enterElementFullscreen() {
-    await fullscreenTarget.requestFullscreen()
+    try {
+      await fullscreenTarget.requestFullscreen()
+    } catch (e) {
+      // WHATWG fullscreen spec: requestFullscreen rejects when the document is
+      // not allowed to go fullscreen (no transient user activation, sandboxed
+      // frame, element not fully rendered). The runtime-side window-fullscreen
+      // chain only kicks in after the element actually entered fullscreen, so
+      // a spec rejection must be surfaced instead of left as an unhandled
+      // rejection the suite would never see.
+      onMessage(`requestFullscreen rejected: ${e}`)
+    }
   }
 
   async function exitElementFullscreen() {
-    await document.exitFullscreen()
+    try {
+      await document.exitFullscreen()
+    } catch (e) {
+      // WHATWG fullscreen spec: exitFullscreen rejects when the document is
+      // not currently fullscreen (e.g. the runtime already unwound the
+      // window-fullscreen chain, or fullscreen was never entered).
+      onMessage(`exitFullscreen rejected: ${e}`)
+    }
   }
 
   async function updateProgressBar() {

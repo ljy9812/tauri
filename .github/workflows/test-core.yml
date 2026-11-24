@@ -114,3 +114,19 @@ jobs:
         run: |
           cargo install cross --git https://github.com/cross-rs/cross --rev 51f46f296253d8122c927c5bb933e3c4f27cc317 --locked
           cross ${{ matrix.features.key == 'no-default' && 'check' || matrix.platform.command }} --target ${{ matrix.platform.target }} ${{ matrix.features.args }} --manifest-path crates/tauri/Cargo.toml
+
+      # tauri-runtime-wry carries pure-logic unit tests (e.g. auto-resize
+      # enablement decisions, runtime message handling) that were previously
+      # not executed by any workflow — mirror the `test tauri` steps so they
+      # run in CI (check-only under --no-default-features, like `test tauri`).
+      - name: test tauri-runtime-wry
+        if: ${{ !matrix.platform.cross }}
+        # Using --lib --bins --tests to skip doc tests
+        run: cargo ${{ matrix.features.key == 'no-default' && 'check' || matrix.platform.command }} --target ${{ matrix.platform.target }} ${{ matrix.features.args }} --lib --bins --tests --manifest-path crates/tauri-runtime-wry/Cargo.toml
+
+      - name: test tauri-runtime-wry (using cross)
+        if: ${{ matrix.platform.cross }}
+        # Using --lib --bins --tests to skip doc tests
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross --rev 51f46f296253d8122c927c5bb933e3c4f27cc317 --locked
+          cross ${{ matrix.features.key == 'no-default' && 'check' || matrix.platform.command }} --target ${{ matrix.platform.target }} ${{ matrix.features.args }} --lib --bins --tests --manifest-path crates/tauri-runtime-wry/Cargo.toml

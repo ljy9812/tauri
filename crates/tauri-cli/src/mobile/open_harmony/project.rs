@@ -300,13 +300,41 @@ fn find_owning_workspace_manifest(tauri_dir: &Path, doc: &DocumentMut) -> Option
 struct OhosCargoInjectionReport {
   added_dependencies: Vec<&'static str>,
   added_patch: Option<String>,
+  /// `(existing, computed)` when the manifest already carries an
+  /// `openharmony-ability` patch whose path differs from the one this run
+  /// would have computed (e.g. `OHOS_ABILITY_HAR` moved, or the sibling
+  /// checkout is discovered through a different ancestor). The exists-skip
+  /// keeps the existing entry silently by contract; this is the one piece of
+  /// divergence that skip can hide, so the caller surfaces it.
+  patch_path_divergence: Option<(String, String)>,
+}
+
+/// The `path` value of an existing `[patch.crates-io] openharmony-ability`
+/// entry, whichever of the valid TOML spellings it uses (bare string, inline
+/// table, or full table). Backslashes are normalized so a hand-written
+/// Windows path compares equal to the computed forward-slash one.
+fn existing_patch_path(item: &Item) -> Option<String> {
+  match item {
+    Item::Value(Value::String(s)) => Some(s.value().replace('\\', "/")),
+    Item::Value(Value::InlineTable(t)) => t
+      .get("path")
+      .and_then(|v| v.as_str())
+      .map(|s| s.replace('\\', "/")),
+    Item::Table(t) => t
+      .get("path")
+      .and_then(|v| v.as_str())
+      .map(|s| s.replace('\\', "/")),
+    _ => None,
+  }
 }
 
 /// Pure TOML-merge half of [`inject_ohos_cargo_dependencies`] (no I/O), split
 /// out so the merge semantics are unit-testable: inject the missing
 /// `[target.'cfg(target_env = "ohos")'.dependencies]` keys and, when
 /// `ability_patch_path` is given, the `[patch.crates-io]` entry pinning
-/// `openharmony-ability` to it. Existing entries are never rewritten.
+/// `openharmony-ability` to it. Existing entries are never rewritten; a
+/// pre-existing patch whose path differs from the computed one is reported as
+/// [`OhosCargoInjectionReport::patch_path_divergence`] for the caller to log.
 fn apply_ohos_cargo_dependencies(
   mut doc: DocumentMut,
   ability_patch_path: Option<&str>,
@@ -331,6 +359,7 @@ fn apply_ohos_cargo_dependencies(
   }
 
   let mut added_patch = None;
+  let mut patch_path_divergence = None;
   if let Some(patch_path) = ability_patch_path {
     let patch = implicit_table_entry(root, "patch")?;
     let crates_io = explicit_table_entry(patch, "crates-io")?;
@@ -340,6 +369,11 @@ fn apply_ohos_cargo_dependencies(
       definition.get_or_insert("path", patch_path.to_string());
       *item = Item::Value(Value::InlineTable(definition));
       added_patch = Some(patch_path.to_string());
+    } else if let Some(existing) = existing_patch_path(item) {
+      let computed = patch_path.replace('\\', "/");
+      if existing != computed {
+        patch_path_divergence = Some((existing, computed));
+      }
     }
   }
 
@@ -348,6 +382,7 @@ fn apply_ohos_cargo_dependencies(
     OhosCargoInjectionReport {
       added_dependencies,
       added_patch,
+      patch_path_divergence,
     },
   ))
 }
@@ -434,6 +469,17 @@ fn inject_ohos_cargo_dependencies(tauri_dir: &Path, ability_crate: Option<&Path>
   }
 
   let (updated, report) = apply_ohos_cargo_dependencies(doc, patch_path.as_deref())?;
+
+  if let Some((existing, computed)) = &report.patch_path_divergence {
+    log::warn!(
+      "[patch.crates-io] openharmony-ability already points at `{existing}` in {} while \
+       the discovered sibling checkout is `{computed}` (OHOS_ABILITY_HAR moved, or the \
+       checkout is found through a different ancestor). The existing entry was kept — \
+       if cargo resolves two crate instances or the wrong source, update the patch \
+       path to `{computed}` and re-run init",
+      manifest_path.display()
+    );
+  }
 
   if report.added_dependencies.is_empty() && report.added_patch.is_none() {
     return Ok(());
@@ -596,5 +642,32 @@ mod tests {
     assert!(report.added_patch.is_none());
     assert!(updated.contains("../my-fork/crates/ability"));
     assert!(!updated.contains("../../openharmony-ability/crates/ability"));
+    // the silent skip still surfaces the divergence for the caller to log
+    assert_eq!(
+      report.patch_path_divergence,
+      Some((
+        "../my-fork/crates/ability".into(),
+        "../../openharmony-ability/crates/ability".into()
+      ))
+    );
+  }
+
+  #[test]
+  fn keeps_an_existing_patch_without_divergence_noise() {
+    // same path, different spelling: backslashes normalize to the computed
+    // forward-slash form, so no divergence is reported (TOML literal string,
+    // so the backslashes are plain separators, not escapes)
+    let manifest = concat!(
+      "[package]\nname = \"app\"\n\n",
+      "[patch.crates-io]\nopenharmony-ability = { path = '..\\openharmony-ability\\crates\\ability' }\n",
+    );
+    let (_, report) = apply_ohos_cargo_dependencies(
+      manifest.parse().unwrap(),
+      Some("../openharmony-ability/crates/ability"),
+    )
+    .unwrap();
+
+    assert!(report.added_patch.is_none());
+    assert_eq!(report.patch_path_divergence, None);
   }
 }

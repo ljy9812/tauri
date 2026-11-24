@@ -489,9 +489,16 @@ export const coreTests: TestCase[] = [
       // 主窗可见性不翻（no-op 实证）。窗口级 hide 的 #237 契约拒绝是另一路径。
       const before = await getCurrentWindow().isVisible();
       await appHide();
+      // R4 #25 中态探针：appHide/appShow 之间窗必须仍可见——只看 before/after
+      // 时「hide 真生效又恢复」与「no-op」读数相同，只有中态读数能抓到真 hide。
+      // 探针前提（披露）：isVisible 镜像的是窗口级可见性；若实现把 app hide 映射
+      // 为 Dock 级/会话级而窗级不动，此断言无法区分两者——那是判据本身的边界，
+      // 不是缺陷。
+      const mid = await getCurrentWindow().isVisible();
       await appShow();
       const after = await getCurrentWindow().isVisible();
       assert(before === true, `main window should be visible before, got ${before}`);
+      assert(mid === true, `main window must stay visible between appHide and appShow (non-macOS no-op contract), got ${mid}`);
       assert(after === true, `main window should stay visible (non-macOS no-op contract), got ${after}`);
     },
   },

@@ -336,6 +336,50 @@ fn run_dev(
       plugins::write_build_profile_modules(&config.project_dir(), &[&active_entry])
         .context("failed to select active entry module")?;
 
+      // Same alignment trio as the build callback below (build.rs): dev must
+      // keep the active entry's module.json5 in sync with the conf, otherwise
+      // `tauri dev` after a conf change runs stale deviceTypes /
+      // continuation / requestPermissions until the next full build.
+      let form_device_types = super::device_types_for_form(
+        &tauri_config.bundle.open_harmony.device_types,
+        &device_type,
+      );
+      if form_device_types.is_empty() {
+        let expected = match device_type.as_str() {
+          "mobile" => "phone/tablet/car/wearable/tv",
+          "desktop" => "2in1",
+          _ => "the form's device classes",
+        };
+        crate::error::bail!(
+          "dev --device-type {}: `bundle.openHarmony.deviceTypes` has no {}-class devices (got {:?}); \
+           add one of {} to the config or run a form your config covers",
+          device_type,
+          device_type,
+          tauri_config.bundle.open_harmony.device_types,
+          expected,
+        );
+      }
+      plugins::write_entry_device_types(&config.project_dir(), &device_type, &form_device_types)
+        .context("failed to align entry deviceTypes")?;
+      plugins::write_entry_continuation(
+        &config.project_dir(),
+        &device_type,
+        tauri_config.bundle.open_harmony.continuable,
+        tauri_config.bundle.open_harmony.continue_type.as_deref(),
+        &tauri_config.identifier,
+      )
+      .context("failed to align entry continuation gating")?;
+      plugins::write_entry_request_permissions(
+        &config.project_dir(),
+        &device_type,
+        tauri_config
+          .bundle
+          .open_harmony
+          .request_permissions
+          .as_deref(),
+      )
+      .context("failed to align entry requestPermissions")?;
+
       if !plugin_metadata.is_empty() {
         let project_dir = config.project_dir();
         for plugin in &plugin_metadata {

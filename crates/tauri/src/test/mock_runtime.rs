@@ -66,6 +66,16 @@ pub enum ThemeReceiptMode {
   /// The dispatch is simulated to never deliver a verdict, the way a receipt
   /// that is never drained starves the awaiting command side.
   Hold,
+  /// The dispatch itself is simulated to fail (e.g. the event loop is closed
+  /// so the message cannot be sent) — the command must keep the legacy
+  /// fire-and-forget `Ok` semantics for this arm instead of rejecting.
+  DispatchError,
+  /// The dispatch accepts the receipt but drops it without ever firing, the
+  /// way a runtime torn down between accepting and completing the request
+  /// loses the verdict closure. Dropping the closure drops the command's
+  /// oneshot sender, so the awaiting side resolves with `RecvError` — the
+  /// arm that must keep the legacy `Ok` semantics.
+  DropReceipt,
 }
 
 thread_local! {
