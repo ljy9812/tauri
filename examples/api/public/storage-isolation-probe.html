@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>storage isolation probe</title>
+  <style>
+    body {
+      font-family: monospace;
+      font-size: 12px;
+      padding: 8px;
+      background: #fff;
+      color: #222;
+      margin: 0;
+    }
+    #status { word-break: break-all; }
+  </style>
+</head>
+<body>
+  <div id="status">storage-isolation-probe: script pending</div>
+  <!-- External script: CSP default-src 'self' has no 'unsafe-inline' (same
+       constraint as webview-viewport-probe.html), so the probe logic lives in
+       storage-isolation-probe.js instead of an inline <script>. -->
+  <script src="storage-isolation-probe.js"></script>
+</body>
+</html>

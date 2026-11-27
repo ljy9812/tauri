@@ -208,11 +208,13 @@ export default class EntryAbility extends NativeAbility {
     // tauri.conf's first `app.windows` background_color luminance (issue
     // #224/C96): bright page -> dark content, dark page -> light content;
     // unconfigured apps keep the light-theme default (dark content).
-    // NOTE: an *unset* bar background is theme-following, not black - the OS
-    // defaults to light #FFF0F0F0 in light theme and dark #FF1A1A1A in dark
-    // theme (the @ohos.window.d.ts `SystemBarProperties` content-color
-    // defaults), which is why transparency is set explicitly here instead
-    // of relying on the default.
+    // NOTE: an *unset* bar background is theme-following, not black - the
+    // bar surface renders light #FFF0F0F0 in light theme and dark #FF1A1A1A
+    // in dark theme (bar BACKGROUND appearance on current devices - NOT the
+    // `SystemBarProperties` content-color defaults; @ohos.window.d.ts pins
+    // statusBarContentColor to '#E5FFFFFF' and statusBarColor to
+    // '#66000000'), which is why transparency is set explicitly here
+    // instead of relying on the default.
     try {
       await win.setWindowSystemBarProperties({
         statusBarColor: '#00000000',

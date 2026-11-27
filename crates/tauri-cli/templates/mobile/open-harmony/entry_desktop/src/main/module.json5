@@ -46,9 +46,10 @@
         ]
       }
     ],
-    // bundle.openHarmony.requestPermissions replaces this baseline wholesale
-    // when configured (init renders the configured list, builds rewrite it -
-    // issue #220); unset config keeps the baseline below. These are OS
+    // bundle.openHarmony.requestPermissions.{{form}} replaces this baseline
+    // wholesale when that form is configured (init renders the configured
+    // list, builds rewrite it - issue #220); unset config or an unset form
+    // key keeps the baseline below. These are OS
     // manifest permissions, unrelated to tauri capabilities/ACL permissions.
     {{#if form-request-permissions-set}}
     "requestPermissions": {{{form-request-permissions}}}
@@ -75,10 +76,11 @@
       // additionally need the AGC restricted-permission review and only
       // special scenarios pass — prefer the PasteButton secure component,
       // which needs no permission). CONFLICT WARNING: if the app also sets
-      // bundle.openHarmony.requestPermissions in tauri.conf.json, that list
-      // replaces this whole block on every build and any hand edit here
-      // (including a READ_PASTEBOARD addition) is silently reverted — put
-      // the permission in the config instead. See the project-root
+      // bundle.openHarmony.requestPermissions.{{form}} in tauri.conf.json,
+      // that form's list replaces this whole block on every build and any
+      // hand edit here (including a READ_PASTEBOARD addition) is silently
+      // reverted — put the permission in the config instead. See the
+      // project-root
       // README.md for the durable copy of this guidance (the entry
       // deviceTypes rewrite drops json5 comments on the first build).
       {{#if (eq form "desktop")}},

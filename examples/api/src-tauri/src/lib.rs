@@ -976,6 +976,8 @@ pub fn run_app<R: Runtime, F: FnOnce(&App<R>) + Send + 'static>(
       cmd::clear_tracked_events,
       cmd::track_webview_viewport_probe,
       cmd::get_tracked_webview_viewport_probes,
+      cmd::track_storage_isolation_probe,
+      cmd::get_tracked_storage_isolation_reports,
       #[cfg(target_env = "ohos")]
       cmd::set_deny_new_window,
       #[cfg(target_env = "ohos")]

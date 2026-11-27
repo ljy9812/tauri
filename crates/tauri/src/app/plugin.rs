@@ -215,15 +215,24 @@ pub async fn set_app_theme<R: Runtime>(
       "setColorMode failed on the deferred ArkTS tick — the theme override rolled back to follow-system"
         .to_string(),
     ),
-    // The receipt was dropped without a verdict (the closure always sends,
-    // so this should not happen). Keep the legacy success semantics.
+    // The receipt was dropped without a verdict. Reachable: the runtime
+    // accepted the receipt and then tore down before firing it (tao drops
+    // queued receipts on loop teardown; the `DropReceipt` test seam
+    // simulates exactly this arm). Keep the legacy success semantics.
     Ok(Err(_)) => {
       log::warn!("set_app_theme receipt channel dropped without a verdict");
       Ok(())
     }
     // Timed out: stale-HAR / early-startup cases where no deferred
-    // completion will ever be drained. Keep the legacy fire-and-forget
-    // semantics instead of hanging the JS caller.
+    // completion ever arrives for THIS call. The receipt stays queued in
+    // tao until its 10s TTL is reclaimed at the head of a later drain
+    // (THEME_RECEIPT_TTL in tao's event_loop.rs — see the app.rs known
+    // boundary note), so it no longer strands indefinitely; the residual
+    // is the arrival-order pairing: a completion arriving before the TTL
+    // can still fire this already-abandoned receipt (the send lands in the
+    // dropped receiver) while the caller's own receipt starves — the root
+    // fix is a call-id on the setColorMode wire (issue #264). Keep the
+    // legacy fire-and-forget semantics instead of hanging the JS caller.
     Err(_) => {
       log::warn!("set_app_theme receipt timed out without a verdict");
       Ok(())

@@ -4677,11 +4677,23 @@ fn handle_user_message<T: UserEvent>(
             let bounds: RectWrapper = bounds.into();
             let bounds = bounds.0;
 
-            {
-              let scale_factor = window.scale_factor();
-              let size = bounds.size.to_logical::<f32>(scale_factor);
-              let position = bounds.position.to_logical::<f32>(scale_factor);
-              let window_size = window.inner_size().to_logical::<f32>(scale_factor);
+            let scale_factor = window.scale_factor();
+            let size = bounds.size.to_logical::<f32>(scale_factor);
+            let position = bounds.position.to_logical::<f32>(scale_factor);
+            let window_size = window.inner_size().to_logical::<f32>(scale_factor);
+
+            // Dispatch first, advance the auto-resize state only on success
+            // (tauri#256 review): the old order advanced `explicit` and the
+            // rate targets before the dispatch, so a refused `set_bounds`
+            // (wry's OHOS path errors when the bridge pump thread is dead
+            // instead of returning Ok with the cache untouched) still left
+            // this state machine claiming full explicitness with rates
+            // derived from a request that never applied -- a later
+            // `set_auto_resize(true)` then recomputed geometry from that
+            // stale state. An Err keeps the previous state untouched.
+            if let Err(e) = webview.set_bounds(bounds) {
+              log::error!("failed to set webview size: {e}");
+            } else {
               let mut auto_state = webview.bounds.lock().unwrap();
               // A full set_bounds carries all-real components: the whole wry
               // bounds cache becomes real geometry (issue
@@ -4702,10 +4714,6 @@ fn handle_user_message<T: UserEvent>(
                 b.y_rate = position.y / window_size.height;
               }
             }
-
-            if let Err(e) = webview.set_bounds(bounds) {
-              log::error!("failed to set webview size: {e}");
-            }
           }
           WebviewMessage::SetSize(size) => {
             // Only the size component is being set. Back-filling the position
@@ -4724,30 +4732,36 @@ fn handle_user_message<T: UserEvent>(
             {
               let scale_factor = window.scale_factor();
               let logical_size = size.to_logical::<f32>(scale_factor);
+              let window_size = window.inner_size().to_logical::<f32>(scale_factor);
 
-              let mut auto_state = webview.bounds.lock().unwrap();
-              // The size axis becomes real; the position axis keeps its
-              // previous realness (the sentinel never enters the wry cache)
-              // (issue Eulogizethesun/tauri#244, per-axis transitions issue
-              // Eulogizethesun/tauri#256).
-              auto_state.explicit = ohos_set_size_explicitness(auto_state.explicit);
-              let rate_target = if auto_state.rates.is_some() {
-                auto_state.rates.as_mut()
-              } else {
-                auto_state.parked.as_mut()
-              };
-              if let Some(b) = rate_target {
-                let window_size = window.inner_size().to_logical::<f32>(scale_factor);
-                b.width_rate = logical_size.width / window_size.width;
-                b.height_rate = logical_size.height / window_size.height;
-              }
-              drop(auto_state);
-
+              // Dispatch first, advance the auto-resize state only on
+              // success (tauri#256 review): the old order advanced
+              // `explicit` and the rate targets before the dispatch, so a
+              // refused `set_bounds` (wry's OHOS path errors when the bridge
+              // pump thread is dead instead of returning Ok with the cache
+              // untouched) still left the state advanced for a request that
+              // never applied. An Err keeps the previous state.
               if let Err(e) = webview.set_bounds(wry::Rect {
                 position: ohos_unspecified_position(),
                 size,
               }) {
                 log::error!("failed to set webview size: {e}");
+              } else {
+                let mut auto_state = webview.bounds.lock().unwrap();
+                // The size axis becomes real; the position axis keeps its
+                // previous realness (the sentinel never enters the wry cache)
+                // (issue Eulogizethesun/tauri#244, per-axis transitions issue
+                // Eulogizethesun/tauri#256).
+                auto_state.explicit = ohos_set_size_explicitness(auto_state.explicit);
+                let rate_target = if auto_state.rates.is_some() {
+                  auto_state.rates.as_mut()
+                } else {
+                  auto_state.parked.as_mut()
+                };
+                if let Some(b) = rate_target {
+                  b.width_rate = logical_size.width / window_size.width;
+                  b.height_rate = logical_size.height / window_size.height;
+                }
               }
             }
             #[cfg(not(target_env = "ohos"))]
@@ -4789,30 +4803,33 @@ fn handle_user_message<T: UserEvent>(
             {
               let scale_factor = window.scale_factor();
               let logical_position = position.to_logical::<f32>(scale_factor);
+              let window_size = window.inner_size().to_logical::<f32>(scale_factor);
 
-              let mut auto_state = webview.bounds.lock().unwrap();
-              // The position axis becomes real; the size axis keeps its
-              // previous realness (the sentinel never enters the wry cache)
-              // (issue Eulogizethesun/tauri#244, per-axis transitions issue
-              // Eulogizethesun/tauri#256).
-              auto_state.explicit = ohos_set_position_explicitness(auto_state.explicit);
-              let rate_target = if auto_state.rates.is_some() {
-                auto_state.rates.as_mut()
-              } else {
-                auto_state.parked.as_mut()
-              };
-              if let Some(b) = rate_target {
-                let window_size = window.inner_size().to_logical::<f32>(scale_factor);
-                b.x_rate = logical_position.x / window_size.width;
-                b.y_rate = logical_position.y / window_size.height;
-              }
-              drop(auto_state);
-
+              // Dispatch first, advance the auto-resize state only on
+              // success (tauri#256 review): same rationale as the SetSize
+              // arm above -- an Err keeps the previous state instead of
+              // advancing it for a request that never applied.
               if let Err(e) = webview.set_bounds(wry::Rect {
                 position,
                 size: ohos_unspecified_size(),
               }) {
                 log::error!("failed to set webview position: {e}");
+              } else {
+                let mut auto_state = webview.bounds.lock().unwrap();
+                // The position axis becomes real; the size axis keeps its
+                // previous realness (the sentinel never enters the wry cache)
+                // (issue Eulogizethesun/tauri#244, per-axis transitions issue
+                // Eulogizethesun/tauri#256).
+                auto_state.explicit = ohos_set_position_explicitness(auto_state.explicit);
+                let rate_target = if auto_state.rates.is_some() {
+                  auto_state.rates.as_mut()
+                } else {
+                  auto_state.parked.as_mut()
+                };
+                if let Some(b) = rate_target {
+                  b.x_rate = logical_position.x / window_size.width;
+                  b.y_rate = logical_position.y / window_size.height;
+                }
               }
             }
             #[cfg(not(target_env = "ohos"))]
@@ -5755,6 +5772,11 @@ fn ohos_pending_close_take(set: &Mutex<HashSet<WindowId>>, id: &WindowId) -> boo
 /// guard left behind would misroute the next USER CloseRequested into the
 /// confirmation executor (no app-facing dispatch, accounting removed for a
 /// still-alive window) -- exactly the #255 bug.
+///
+/// Called from TWO sites: the event-loop prelude (before any event dispatch)
+/// and `on_close_requested_ohos` (immediately before its in-flight take,
+/// #255 review follow-up) -- the second call shrinks the unsynchronized
+/// enqueue window that the prelude drain alone cannot close.
 #[cfg(target_env = "ohos")]
 fn ohos_clear_failed_destroy_guards(
   windows: &WindowsStore,
@@ -5842,6 +5864,18 @@ fn ohos_clear_pending_close_for_failures(
 /// accounting matching the still-alive window (report zombie fix, D3).
 #[cfg(target_env = "ohos")]
 fn on_close_requested_ohos<T: UserEvent>(ctx: OhosCloseCtx<'_, T>, window_id: WindowId) {
+  // #255 review: drain the destroy-failure queue once more, immediately
+  // before the in-flight take below. The failure enqueue happens on the
+  // bridge executor's thread with no synchronization against the prelude
+  // drain (and the failure waker's wakeup is not a drain observation point
+  // -- an empty user-event queue wakes the loop without invoking the
+  // embedding handler), so a failure enqueued after the last prelude drain
+  // would otherwise be misread HERE as the destruction loopback, with the
+  // non-self-healing consequences documented on
+  // `ohos_initiate_destroy_ohos`. This shrinks the misread window to the
+  // few instructions between this drain and the take.
+  ohos_clear_failed_destroy_guards(&ctx.windows, &ctx.ohos_pending_close);
+
   // In-flight guard: this CloseRequested is the destruction loopback.
   if ohos_pending_close_take(&ctx.ohos_pending_close, &window_id) {
     log::info!("[wry] CloseRequested for in-flight window: destruction loopback (confirmation)");
@@ -5994,14 +6028,27 @@ fn ohos_main_window_close_gate<T: UserEvent>(
 ///   (`ohos_clear_failed_destroy_guards`) drains the queue and removes the
 ///   stale guard before the next event dispatch.
 ///
-/// Residual boundary: a failure is only observed on the NEXT event-loop
-/// iteration (the failure waker's wakeup, or any other event). A USER
-/// CloseRequested delivered inside that gap -- after the failed dispatch,
-/// before the drain runs -- can still be misread as the loopback ONCE (at
-/// most one event-loop cycle; later closes dispatch normally, and the drained
-/// failure for an already-consumed marker is a no-op). tao announces nothing
-/// on the event lane for failures (design D3), so inside the gap the runtime
-/// has no signal to tell the legs apart.
+/// Residual boundary (issue Eulogizethesun/tauri#255 review): the failure
+/// enqueue happens on the bridge executor's thread with NO synchronization
+/// against the main thread's prelude drain, and the failure waker's wakeup is
+/// NOT a drain observation point -- a wake with an empty user-event queue
+/// does not invoke the embedding handler, so the drain only runs when event
+/// processing actually resumes. A USER CloseRequested delivered inside that
+/// gap -- the enqueue landed after the last drain, before the next one --
+/// is misread as the destruction loopback, and the misread is NOT
+/// self-healing: `on_window_close_ohos` removes the store/registry entries
+/// and fires Destroyed for a still-alive window, so a LATER close of that
+/// window finds no store entry and is silently ignored (the `None => return`
+/// arm -- the window is unaccounted, it does not "dispatch normally"; the
+/// all-closed exit check can also fire on a phantom-empty store and exit the
+/// app with the window still alive). The mitigation above (an extra drain
+/// right before the in-flight take in `on_close_requested_ohos`) shrinks the
+/// window to the same-thread drain-to-take interval: a failure enqueued
+/// before that drain can no longer be misread, only one landing inside those
+/// few instructions still can. tao announces nothing on the event lane for
+/// failures (design D3), so inside the residual gap the runtime has no
+/// signal to tell the legs apart; the root fix would be an attempt id on the
+/// destroy wire (not just the os window id).
 #[cfg(target_env = "ohos")]
 fn ohos_initiate_destroy_ohos<T: UserEvent>(ctx: OhosCloseCtx<'_, T>, window_id: WindowId) {
   let inner = ctx

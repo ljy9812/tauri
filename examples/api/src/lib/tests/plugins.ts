@@ -808,39 +808,98 @@ export const pluginTests: TestCase[] = [
   {
     name: '@tauri-apps/plugin-window-state.filename+save+restore',
     category: 'side-effect',
-    timeout: 25000,
+    timeout: 60000,
     async fn() {
       const { filename, saveWindowState, restoreStateCurrent, StateFlags } = await import('@tauri-apps/plugin-window-state');
-      const { getCurrentWindow, LogicalSize } = await import('@tauri-apps/api/window');
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const { LogicalSize, PhysicalSize } = await import('@tauri-apps/api/dpi');
       try {
         const fname = await filename();
         assert(typeof fname === 'string' && fname.length > 0, `filename should be non-empty, got: ${fname}`);
-        let originalSize: LogicalSize | null = null;
-        try { originalSize = await getCurrentWindow().innerSize(); } catch { /* ignore */ }
-        await getCurrentWindow().setSize(new LogicalSize(400, 300));
-        await saveWindowState(StateFlags.SIZE);
-        await restoreStateCurrent(StateFlags.SIZE);
-        if (originalSize && originalSize.width > 0 && originalSize.height > 0) {
-          try {
-            await getCurrentWindow().setSize(originalSize);
-            // OHOS: saveWindowState reads the plugin's in-memory cache, which is
-            // refreshed asynchronously by the Resized event (onAreaChange dispatch).
-            // Saving immediately after setSize races that dispatch and persists the
-            // shrunken 400x300 — the next app launch then restores it. Poll innerSize
-            // until the restore has actually landed before saving back.
-            const deadline = Date.now() + 5000;
-            while (Date.now() < deadline) {
-              const cur = await getCurrentWindow().innerSize();
-              if (Math.abs(cur.width - originalSize.width) <= 2 && Math.abs(cur.height - originalSize.height) <= 2) break;
-              await new Promise((r) => setTimeout(r, 100));
+        const win = getCurrentWindow();
+        let originalSize: PhysicalSize | null = null;
+        try { originalSize = await win.innerSize(); } catch { /* ignore */ }
+
+        // Genuine save→restore round-trip with a read-back assertion (review
+        // tauri#262 item 12): the old body called restoreStateCurrent but never
+        // asserted the restore landed. Sequence: shrink to 1000x700 (physical)
+        // and wait for the resize (plus the plugin's Resized-event cache
+        // refresh — OHOS refreshes the in-memory cache asynchronously) to
+        // settle, SAVE, grow away to 1100x770, wait again, RESTORE, then
+        // poll+assert we are back at the saved 1000x700.
+        //
+        // Physical targets + min-constraint clearing, mirroring
+        // `window.setInnerSize actually resizes` (window-ops): the demo window
+        // carries min_inner_size(600,400) (src-tauri lib.rs), which at the
+        // 2in1's density 1.9 is a physical floor of 1140x760 — the first
+        // device round of this read-back form used LogicalSize(400,300)
+        // targets, which the floor silently clamped up, so the poll could
+        // never converge (read 1140x760 forever). Clear the constraint first
+        // (set-limits is a fire-and-forget bridge call — wait for the removal
+        // to land before resizing, the system gives no ordering guarantee)
+        // and keep targets at or above the issue#97 1000x700 baseline.
+        await win.setMinSize(null);
+        await new Promise((r) => setTimeout(r, 600));
+        const waitSize = async (w: number, h: number, what: string) => {
+          const deadline = Date.now() + 8000;
+          let cur = await win.innerSize();
+          while (Date.now() < deadline && !(Math.abs(cur.width - w) <= 2 && Math.abs(cur.height - h) <= 2)) {
+            await new Promise((r) => setTimeout(r, 100));
+            cur = await win.innerSize();
+          }
+          assert(
+            Math.abs(cur.width - w) <= 2 && Math.abs(cur.height - h) <= 2,
+            `${what}: expected innerSize ~${w}x${h}, got ${cur.width}x${cur.height} within 8000ms`
+          );
+        };
+        try {
+          await win.setSize(new PhysicalSize(1000, 700));
+          await waitSize(1000, 700, 'shrink to the to-be-saved 1000x700');
+          // Let the Resized event land in the plugin cache before saving, so the
+          // file records 1000x700 and not the pre-shrink size.
+          await new Promise((r) => setTimeout(r, 300));
+          await saveWindowState(StateFlags.SIZE);
+          await win.setSize(new PhysicalSize(1100, 770));
+          await waitSize(1100, 770, 'grow away to 1100x770');
+          await restoreStateCurrent(StateFlags.SIZE);
+          await waitSize(1000, 700, 'restoreStateCurrent(SIZE) after growing away');
+        } finally {
+          // Suite contract: the main window ends this test at its INITIAL
+          // size — restore it even when an assertion above threw (the first
+          // device round of the read-back form failed mid-sequence and left
+          // the window shrunk at the clamp floor). Order mirrors window-ops:
+          // size first (originalSize satisfies the 600x400 logical floor, so
+          // re-arming the constraint afterwards triggers no re-clamp),
+          // constraint second, then an ALL-flags save so the NEXT launch also
+          // restores this geometry (SIZE-only would persist the cache's
+          // creation-time (0,0) position).
+          if (originalSize && originalSize.width > 0 && originalSize.height > 0) {
+            let restored = false;
+            try {
+              await win.setSize(originalSize);
+              // OHOS: saveWindowState reads the plugin's in-memory cache, which is
+              // refreshed asynchronously by the Resized event (onAreaChange dispatch).
+              // Saving immediately after setSize races that dispatch and persists the
+              // mid-test size — the next app launch then restores it. Poll innerSize
+              // until the restore has actually landed before saving back.
+              const deadline = Date.now() + 8000;
+              while (Date.now() < deadline) {
+                const cur = await win.innerSize();
+                if (Math.abs(cur.width - originalSize.width) <= 2 && Math.abs(cur.height - originalSize.height) <= 2) {
+                  restored = true;
+                  break;
+                }
+                await new Promise((r) => setTimeout(r, 100));
+              }
+            } catch { /* best-effort */ }
+            // Persist only when the restore actually landed — saving a cache
+            // that still holds the mid-test size would make the NEXT launch
+            // restore the wrong geometry.
+            if (restored) {
+              try { await saveWindowState(StateFlags.ALL); } catch { /* best-effort */ }
             }
-            // Save with ALL (not SIZE) so the OHOS save-time position refresh
-            // (outer_position) writes the real position back — a SIZE-only save
-            // leaves the cache's creation-time (0,0) in the file, and the next
-            // launch's startup restore (StateFlags::all) yanks the window to
-            // the top-left corner.
-            await saveWindowState(StateFlags.ALL);
-          } catch { /* ignore */ }
+          }
+          try { await win.setMinSize(new LogicalSize(600, 400)); } catch { /* best-effort */ }
         }
       } catch (e) {
         if (isMissing(e)) skip(`window-state plugin not available: ${e}`);

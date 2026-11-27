@@ -349,6 +349,13 @@
       }
       console.log('[ManualTest] Completed:', name, 'in', Date.now() - start, 'ms');
     } catch (e) {
+      // 拒绝也是结果（检视 T262-19）：此前异常只进 console.error，页面 manualResult
+      // 停留在上一次内容/空——操作员按页面文案判读会把契约拒绝误记成 FAIL。现在把
+      // 异常写成可判读的 manualResult 行；是否 PASS 按各行的契约判据（已披露的
+      // 显式契约拒绝=PASS，其余异常=FAIL 须排查）。
+      const msg = e?.message ?? String(e);
+      manualResult = `${name} → 异常（非 resolve）：${msg}\n\n判读：已披露的显式契约拒绝（… is not supported on OpenHarmony 家族）= 按行判据 PASS；其他异常 = FAIL（截图本行报文与控制台）。`;
+      onMessage(`[ManualTest] Failed: ${name} - ${msg}`);
       console.error('[ManualTest] Failed:', name, e);
     }
     try {
@@ -1972,36 +1979,77 @@ Expected behavior:
   }
 
   // 12. Skip taskbar — toggle taskbar icon visibility (S1-037)
+  // 行判据（manual_tests.md §36.10 / registry S1-037 contract:'reject'）：显式契约
+  // 拒绝即 PASS——OHOS 任务栏图标与窗口/Ability 生命周期绑定，无"只藏任务栏图标"
+  // 系统 API，上游 Android/iOS 同桶 unsupported。
   let skipTaskbarState = $state(false);
   async function manualSetSkipTaskbar() {
     await wrapManual('window.setSkipTaskbar (taskbar icon toggle)', async () => {
       const next = !skipTaskbarState;
       skipTaskbarState = next;
-      await getCurrentWindow().setSkipTaskbar(next);
-      manualResult = `setSkipTaskbar(${next}) dispatched on main window.\n\nExpected: 任务栏上本应用图标 ${next ? '消失' : '恢复'}（无 getter，视觉判据）。\n再点恢复。\n注: 2in1 任务栏=底部 Dock 区。`;
+      let msg = null;
+      try {
+        await getCurrentWindow().setSkipTaskbar(next);
+      } catch (e) {
+        msg = e?.message ?? String(e);
+        if (/setSkipTaskbar[\s\S]*not supported on OpenHarmony/i.test(msg)) {
+          manualResult = `setSkipTaskbar(${next}) → 显式契约拒绝（按行判据 PASS）：\n${msg}\n\nS1-037 / manual_tests.md §36.10：出现「setSkipTaskbar is not supported on OpenHarmony」即 PASS（诚实契约，替代上游静默 no-op）。无 getter，判据不依赖任务栏视觉变化。`;
+          onMessage(manualResult);
+          return;
+        }
+        throw e; // 非契约形态的异常（dispatcher 断链等）→ wrapManual 按 FAIL 形态记录
+      }
+      manualResult = `setSkipTaskbar(${next}) resolved（非 OHOS 平台行为，仅链路记录）。\n\nOHOS 行判据（S1-037 / manual_tests.md §36.10）：点击后出现显式契约拒绝「setSkipTaskbar is not supported on OpenHarmony」即 PASS。`;
       onMessage(manualResult);
     });
   }
 
   // 13. Window shadow — toggle window shadow (S1-040)
+  // 行判据（manual_tests.md §36.10 / registry S1-040）：显式契约拒绝即 PASS——
+  // OHOS 窗口体系无阴影概念（装饰窗边框归系统 chrome、自绘 float 子窗无阴影 API）。
   let shadowState = $state(true);
   async function manualSetShadow() {
     await wrapManual('window.setShadow (visual toggle)', async () => {
       const next = !shadowState;
       shadowState = next;
-      await getCurrentWindow().setShadow(next);
-      manualResult = `setShadow(${next}) dispatched on main window.\n\nExpected: 窗口投影/阴影 ${next ? '恢复' : '消失'}（无 getter，目检窗口边缘外圈）。\n再点恢复。`;
+      let msg = null;
+      try {
+        await getCurrentWindow().setShadow(next);
+      } catch (e) {
+        msg = e?.message ?? String(e);
+        if (/setShadow[\s\S]*not supported on OpenHarmony/i.test(msg)) {
+          manualResult = `setShadow(${next}) → 显式契约拒绝（按行判据 PASS）：\n${msg}\n\nS1-040 / manual_tests.md §36.10：出现「setShadow is not supported on OpenHarmony」即 PASS（OHOS 窗口体系无阴影概念，上游 Android/iOS 同桶）。无 getter，判据不依赖目检窗口边缘。`;
+          onMessage(manualResult);
+          return;
+        }
+        throw e;
+      }
+      manualResult = `setShadow(${next}) resolved（非 OHOS 平台行为，仅链路记录）。\n\nOHOS 行判据（S1-040 / manual_tests.md §36.10）：点击后出现显式契约拒绝「setShadow is not supported on OpenHarmony」即 PASS。`;
       onMessage(manualResult);
     });
   }
 
   // 14. Window icon — setIcon with a tiny PNG (S1-042)
+  // 行判据（manual_tests.md §36.10 / registry S1-042 contract:'reject'）：显式契约
+  // 拒绝即 PASS——应用图标打包期由 module.json5 固定，窗口级运行时换图标非平台
+  // 能力（tao 侧注释 "Icon is NOT changeable at runtime"）。
   async function manualSetIcon() {
     await wrapManual('window.setIcon (1x1 PNG)', async () => {
       // 1x1 透明 PNG（与 cov windowOpsExtra setIcon 批同源的极小载荷）
       const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
-      await getCurrentWindow().setIcon(png);
-      manualResult = `setIcon(1x1 PNG, ${png.length} bytes) dispatched.\n\nExpected: 命令干净 resolve（dispatcher 链路）。\n视觉: 标题栏/任务栏图标可能变化或不变（窗口层运行时图标在 OHOS 上无静态配置优先，无视觉变化=记录形态不判 FAIL）。\n链路 PASS = resolve 无错误。`;
+      let msg = null;
+      try {
+        await getCurrentWindow().setIcon(png);
+      } catch (e) {
+        msg = e?.message ?? String(e);
+        if (/setIcon[\s\S]*not supported on OpenHarmony/i.test(msg)) {
+          manualResult = `setIcon(1x1 PNG, ${png.length} bytes) → 显式契约拒绝（按行判据 PASS）：\n${msg}\n\nS1-042 / manual_tests.md §36.10：出现「setIcon is not supported on OpenHarmony」即 PASS（图标打包期固定，运行时不可改）。JS API 面存在但运行时拒绝；cov 层 dispatcher/臂断言另一路径已存。`;
+          onMessage(manualResult);
+          return;
+        }
+        throw e;
+      }
+      manualResult = `setIcon(1x1 PNG, ${png.length} bytes) resolved（非 OHOS 平台行为，仅链路记录）。\n\nOHOS 行判据（S1-042 / manual_tests.md §36.10）：点击后出现显式契约拒绝「setIcon is not supported on OpenHarmony」即 PASS。`;
       onMessage(manualResult);
     });
   }
@@ -2030,10 +2078,24 @@ Expected behavior:
   }
 
   // 16. Window dragging — startDragging then user drags with mouse (S1-088)
+  // 行判据（manual_tests.md §36.10 / registry S1-088 contract:'reject'）：显式契约
+  // 拒绝即 PASS——功能存在但有调用上下文约束（ArkTS startMoving 只能在触摸按下
+  // 回调内调用，JS 命令上下文不满足前置）；真实拖拽能力由 §36.3 标题栏拖动行承载。
   async function manualStartDragging() {
     await wrapManual('window.startDragging (mouse drag)', async () => {
-      await getCurrentWindow().startDragging();
-      manualResult = `startDragging() dispatched — 窗口已进入拖拽模式。\n\n立即按住鼠标拖动窗口 → 窗口跟随移动（位移 ≥ 10 逻辑 px）→ PASS。\n(边缘拉伸=同 API 族 startResizeDragging；本按钮承载拖拽主路径。)`;
+      let msg = null;
+      try {
+        await getCurrentWindow().startDragging();
+      } catch (e) {
+        msg = e?.message ?? String(e);
+        if (/startDragging[\s\S]*not supported on OpenHarmony/i.test(msg)) {
+          manualResult = `startDragging() → 显式契约拒绝（按行判据 PASS）：\n${msg}\n\nS1-088 / manual_tests.md §36.10：出现「startDragging is not supported on OpenHarmony」即 PASS（调用上下文约束：ArkTS startMoving 只能在触摸按下回调内调用）。真实鼠标拖拽能力由 §36.3 标题栏拖动行承载。`;
+          onMessage(manualResult);
+          return;
+        }
+        throw e;
+      }
+      manualResult = `startDragging() resolved（非 OHOS 平台行为：立即按住鼠标拖动窗口，位移 ≥ 10 逻辑 px → PASS）。\n\nOHOS 行判据（S1-088 / manual_tests.md §36.10）：点击后出现显式契约拒绝「startDragging is not supported on OpenHarmony」即 PASS。`;
       onMessage(manualResult);
     });
   }
@@ -4127,6 +4189,9 @@ Mutex released, no cascade deadlock: ${ok ? 'PASS ✅' : 'FAIL ❌'}`;
     </button>
     <button class="btn" onclick={() => runCategory('side-effect')} disabled={running}>
       Run Side-Effect
+    </button>
+    <button class="btn" onclick={() => runCategory('fsprobe')} disabled={running}>
+      Run FS-Probe
     </button>
     <button class="btn" onclick={async () => {
       try {

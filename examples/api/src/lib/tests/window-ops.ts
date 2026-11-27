@@ -783,7 +783,7 @@ export const windowOpsTests: TestCase[] = [
   // handle directly (same API for both kinds, no branch semantics); closeWindow→reachable only via the menu path (Float has no menu;
   // the branch is defensive code; code-audit verdict: not automated).
   {
-    name: 'window Float kind-branch ops (D11: decorations/flags/minimize/show)',
+    name: 'window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)',
     category: 'auto',
     async fn() {
       await skipOnMobile('the branch ops exercised here (setDecorations/minimize/decoration flags) are upstream cfg(desktop) window commands absent from the mobile build');

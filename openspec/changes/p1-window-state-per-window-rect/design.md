@@ -66,8 +66,11 @@
 **选择**：用 `i64` windowId 作为 per-window rect HashMap 的 key。
 - 主窗口：`0`（tao `Window::new` 在 `mod.rs:1029` 硬编码 `Some(0)`）。
 - Float 子窗口：`NEXT_WINDOW_ID`（`oha/crates/ability/src/window/mod.rs:16`，起始 1）分配的 id。
-  `NEXT_WINDOW_ID` 有 3 个 `fetch_add` 点：L85 `create_os_window`（tao 主路径）、L71 `generate_window_id`
-  （死代码）、L224 `next_window_id`（公共 API）。三者共享同一 `AtomicI64`，保证全局唯一。
+  `NEXT_WINDOW_ID` 有 2 个 `fetch_add` 点：L85 `create_os_window`（tao 主路径）、L224
+  `next_window_id`（公共 API）。两者共享同一 `AtomicI64`，保证全局唯一。
+  （2026-11-27 修订：原第 3 个点 `generate_window_id` 系已披露的预留死代码，ArkTS 侧
+  零调用，导出已删除，`webview-new-window-create` 规格中对应 requirement 同步退役——
+  待 `OnWindowNewResult` 真携带预生成 id 时再加回。）
 
 **理由**：与 tao 现有 `window_id: Option<i64>`（`mod.rs:956`）和 oha 现有 `NEXT_WINDOW_ID` 完全对齐，
 零新 id 体系。主窗口 0 是已建立约定（`mod.rs:1026-1029` 注释、wry Path 1/Path 2 分流均依赖）。

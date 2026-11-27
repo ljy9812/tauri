@@ -29,7 +29,7 @@ use std::{
   time::Duration,
 };
 use sublime_fuzzy::best_match;
-use tauri_utils::config::OpenHarmonyDeviceTypes;
+use tauri_utils::config::{OpenHarmonyDeviceTypes, OpenHarmonyRequestPermissions};
 use tauri_utils::resources::ResourcePaths;
 
 use super::{
@@ -341,6 +341,24 @@ pub fn device_types_for_form(device_types: &OpenHarmonyDeviceTypes, form: &str) 
     "mobile" => device_types.mobile.clone(),
     "desktop" => device_types.desktop.clone(),
     _ => Vec::new(),
+  }
+}
+
+/// The conf `requestPermissions` list for the given form (review tauri#262
+/// item 5): `Some` only when THAT form is configured — the per-form schema
+/// replaces one form's scaffold baseline while the other form's stays, so a
+/// build for the desktop form must not consume the mobile list (or vice
+/// versa). `None` (field unset, or this form's key unset) is the caller's
+/// "leave the scaffold baseline untouched" signal.
+pub fn request_permissions_for_form<'a>(
+  request_permissions: &'a Option<OpenHarmonyRequestPermissions>,
+  form: &str,
+) -> Option<&'a [tauri_utils::config::OhosRequestPermission]> {
+  let per_form = request_permissions.as_ref()?;
+  match form {
+    "mobile" => per_form.mobile.as_deref(),
+    "desktop" => per_form.desktop.as_deref(),
+    _ => None,
   }
 }
 

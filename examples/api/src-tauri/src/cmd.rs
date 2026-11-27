@@ -64,6 +64,11 @@ pub struct EventTracker {
   /// cases create their webviews and poll within one test step, and the suite
   /// runs steps sequentially, so a mid-run clear never races a live poller.
   pub viewport_probes: Mutex<Vec<ViewportProbeSample>>,
+  /// Storage isolation probe reports (public/storage-isolation-probe.{html,js},
+  /// S1-002 read-back): each isolated webview reports what its OWN localStorage
+  /// sees, proving the data_directory separation between isolated webviews and
+  /// the main window. Same accumulation/clear contract as the viewport probes.
+  pub storage_probes: Mutex<Vec<StorageIsolationReport>>,
 }
 
 /// One viewport probe report from a webview page.
@@ -87,6 +92,60 @@ pub struct ViewportProbeSample {
   pub doc_width: f64,
   pub doc_height: f64,
   pub reported_at_ms: u64,
+}
+
+/// One storage-isolation report from an isolated webview page.
+///
+/// Field names are camelCase on the wire for the same reason as
+/// `ViewportProbeSample` above: the JS probe sends camelCase invoke args and
+/// core.ts reads the returned reports as `.sharedSeen` etc.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageIsolationReport {
+  /// Probe key — the reporting webview's label (frozen into
+  /// `__TAURI_INTERNALS__.metadata` by the init scripts).
+  pub tag: String,
+  /// What the isolated webview's OWN localStorage holds for the key the MAIN
+  /// window wrote (`sow-iso-shared`) — `None` when the storage roots are
+  /// separate, which is the isolation contract under test.
+  pub shared_seen: Option<String>,
+  /// Whether the page's own write→read roundtrip of `sow-iso-self` landed
+  /// (the isolated store is functional, not just empty).
+  pub self_write_ok: bool,
+  pub reported_at_ms: u64,
+}
+
+#[command]
+pub fn track_storage_isolation_probe<R: Runtime>(
+  app: tauri::AppHandle<R>,
+  tag: String,
+  shared_seen: Option<String>,
+  self_write_ok: bool,
+) -> tauri::Result<()> {
+  let tracker = app.state::<EventTracker>();
+  tracker
+    .storage_probes
+    .lock()
+    .unwrap()
+    .push(StorageIsolationReport {
+      tag,
+      shared_seen,
+      self_write_ok,
+      reported_at_ms: std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0),
+    });
+  Ok(())
+}
+
+#[command]
+pub fn get_tracked_storage_isolation_reports<R: Runtime>(
+  app: tauri::AppHandle<R>,
+) -> tauri::Result<Vec<StorageIsolationReport>> {
+  let tracker = app.state::<EventTracker>();
+  let reports = tracker.storage_probes.lock().unwrap().clone();
+  Ok(reports)
 }
 
 #[command]
@@ -155,6 +214,7 @@ pub fn clear_tracked_events<R: Runtime>(app: tauri::AppHandle<R>) -> tauri::Resu
   tracker.window_events.lock().unwrap().clear();
   tracker.menu_events.lock().unwrap().clear();
   tracker.viewport_probes.lock().unwrap().clear();
+  tracker.storage_probes.lock().unwrap().clear();
   // Do NOT clear run_events — Ready fires only once and cannot be re-triggered
   Ok(())
 }
@@ -2671,17 +2731,12 @@ pub async fn set_bounds_test<R: tauri::Runtime>(
     let deadline = Instant::now() + ACK_BUDGET;
     loop {
       let tracker = app.state::<EventTracker>();
-      let hit = tracker
-        .viewport_probes
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|s| {
-          s.tag == label
-            && s.reported_at_ms >= since_ms
-            && (s.inner_width - viewport_w).abs() <= TOLERANCE_PX
-            && (s.inner_height - viewport_h).abs() <= TOLERANCE_PX
-        });
+      let hit = tracker.viewport_probes.lock().unwrap().iter().any(|s| {
+        s.tag == label
+          && s.reported_at_ms >= since_ms
+          && (s.inner_width - viewport_w).abs() <= TOLERANCE_PX
+          && (s.inner_height - viewport_h).abs() <= TOLERANCE_PX
+      });
       drop(tracker);
       if hit {
         return Ok(());
@@ -2767,8 +2822,7 @@ pub async fn set_bounds_test<R: tauri::Runtime>(
     .map_err(|e| format!("set_bounds_test: size() read-back failed: {e}"))?;
   let (px, py) = (pos.x as f64, pos.y as f64);
   let (pw, ph) = (size.width as f64, size.height as f64);
-  let position_matches =
-    (px - ox).abs() <= TOLERANCE_PX && (py - oy).abs() <= TOLERANCE_PX;
+  let position_matches = (px - ox).abs() <= TOLERANCE_PX && (py - oy).abs() <= TOLERANCE_PX;
   let size_matches = (pw - ow).abs() <= TOLERANCE_PX && (ph - oh).abs() <= TOLERANCE_PX;
   if !position_matches || !size_matches {
     return Err(format!(

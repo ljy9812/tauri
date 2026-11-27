@@ -2,14 +2,22 @@
 //
 // 数据源：
 //   - SOW 原文：D:\支撑Task\ohos-sow-20260909.md「三、能力清单与验收测试用例」§一~§六
-//   - 1109 逐条审计：tauri\doc\sow\sow-blocks-2026-11.md（转录证据源，BLOCK×节）
+//   - 1109 逐条审计：逐条对账结果直接落在下述 std/cov/manual 字段与 note 里；
+//     转录质量由 scripts\sow-check.mjs 的「引用存在性校验」机器把关（原 1109 会话
+//     转录稿 sow-blocks-2026-11.md 已删——含本机路径与多处计数失真，非可公开证据）。
 //
 // 铁律：
-//   1. 判定四档不手填——scripts\sow-check.mjs 从 std/cov/manual 证据推导
-//      （✅=std 非 manual 锚 或 文档行；🟡=仅 cov；⚠️=仅 manual 锚无文档行；❌=全空；excluded 单列）。
+//   1. 判定六档不手填——scripts\sow-check.mjs 从 std/cov/manual/contract 证据推导
+//      （✅=std 非 manual 锚 或 非拒答文档行；⏭contract=本表 contract:'reject' 登记；
+//      ⏭docSkip=文档锚全是拒答行；🟡=仅 cov；⚠️=仅 manual 锚无文档行；❌=全空；
+//      excluded 单列）。
 //   2. std/cov 引用=数组条目 name 逐字相等（cov 含 'driver: ' 等前缀）；
 //      manual 引用='§节号|用例名称'（节号=manual_tests.md 标题键，脱✅，不存行号）。
-//   3. plan 字段只出现在 72 条缺口条目（47 auto / 22 manual / 3 excluded + §四 10 条豁免；C4+C5 后）。
+//      note 里的证据引用同样用用例名（core『…』形态，review tauri#262 item 14）——
+//      行号引用会随文件增删漂移，名字是注册表本就依赖的机器锚。
+//   3. plan 字段只出现在 76 条处置登记条目（非§四 66 条=46 auto/18 manual/2 excluded
+//      + §四 10 条流程级豁免；fix 批次后终态。复算：esbuild bundle 本文件后
+//      sowRegistry.filter(x=>x.plan) 按 section/plan.kind 分组计数）。
 //   4. 分片由节 agent 转录（BLOCK×行号→精确 name），脚本「引用存在性校验」是转录质量的机器关卡。
 
 export interface SowItem {
@@ -20,6 +28,9 @@ export interface SowItem {
   std?: string[];        // std 数组条目 name（逐字相等；含 category:'manual' 锚点条目）
   cov?: string[];        // cov 条目最终 name（含 'driver: ' 等前缀）
   manual?: string[];     // '§十四|Full Test Tray — …'（节号+用例名称，脱✅，不存行号）
+  contract?: 'reject';   // 契约拒答登记（review tauri#262 item 11）：条目 PASS 判据=
+                         // 平台显式拒绝/契约性 no-op/定义性缺席（拒绝、静默 no-op 或
+                         // 定义性缺席即正确）。sow-check 分到 contract 档，不折算 ✅。
   plan?: {
     kind: 'auto' | 'manual' | 'excluded';
     batch: 'B' | 'C1a' | 'C1b' | 'C2' | 'C3' | 'C4' | 'C5' | 'S4';
@@ -172,4 +183,27 @@ export const SOW_BASELINE_1109 = {
   manualOnly: 0, // ⚠️（manual 锚点无文档行；A3 冻结时 2，B 批 relaunch/updater 对话框回流）
   missing: 0,    // ❌（A3 冻结时 1：log 统一输出，B 批补 std 断言）
   excluded: 2    // plan.kind='excluded'（不含 §四 10 条流程级豁免；C5 后 3 → fix③ S2-004 转 std 后 2：updater download_and_install + sidecar）
+};
+
+/**
+ * 1127 修订（review tauri#262 item 11）：1109 口径里「显式拒绝/no-op 也折算 ✅」的 9 条
+ * 被拆成两支诚实档单列——判据本身一条未动，变的是账目不再把拒答注水进 ✅：
+ *   - contract 6 条：std 侧真断言=平台显式拒绝/契约性 no-op/定义性缺席
+ *     （S1-037/S1-042/S1-088 显式契约拒绝、S2-041 delete_cookie no-op、
+ *      S3-012 setDockVisibility auto 档拒绝、S3-060 runtimeDir 定义性缺席），
+ *     注册表登记 contract:'reject'，sow-check 分档依据本表字段；
+ *   - docSkip 3 条：文档锚全部落在拒答行（平台限制 SKIP / 当前无法验证——
+ *     S5M-032/S5M-070 MenuBar Predefined Hide、S5M-074 Menu Edit→Paste；行内标记
+ *     机器可判，parseManualDoc 分 status，不需要登记）。
+ * 复算：ok 493 = 1109 ok 502 − contract 6 − docSkip 3；其余档位与 1109 一致。
+ * 1109 基线继续导出留档（判据口径演进记录）。
+ */
+export const SOW_BASELINE_1127 = {
+  ok: 493,       // ✅（1127 诚实分档：502 − contract 6 − docSkip 3）
+  contract: 6,   // ⏭ contract:'reject'（显式拒绝/契约 no-op/定义性缺席即 PASS 的登记条目）
+  docSkip: 3,    // ⏭ 文档行拒答口径（平台限制 SKIP / 当前无法验证）
+  covOnly: 0,    // 🟡
+  manualOnly: 0, // ⚠️
+  missing: 0,    // ❌
+  excluded: 2    // plan.kind='excluded'（不含 §四 10 条流程级豁免）
 };

@@ -1,7 +1,7 @@
 import type { SowItem } from './sow-registry';
 
 // SOW §二 wry Webview 与通信：64 条（59✅/5🟡，1109 审计口径）
-// 证据源：doc/sow/sow-blocks-2026-11.md BLOCK 6（逐条表 L643-762）。
+// 证据源：1109 逐条对账结果落档于本表字段（sow-check 机器校验引用存在性；原 BLOCK 转录稿已删）。
 // 短名：core=core.ts / wops=window-ops.ts / adapter=ohos-adapter.ts /
 // driver=driver-generated.ts / gap=api-gap.ts / fault=fault-injection-generated.ts / MTD=doc/manual_tests.md。
 export const sowS2: SowItem[] = [
@@ -214,12 +214,9 @@ export const sowS2: SowItem[] = [
     section: '二',
     group: '子 Webview',
     name: '创建Webview窗口',
-    std: [
-      'webview.url() main-thread sync read after SPA navigation (#192)',
-      'window.createUIAbilityWindow (webview registered + new instance IPC)',
-    ],
+    std: ['window.createUIAbilityWindow (webview registered + new instance IPC)'],
     cov: ['api-gap: webview.create_webview_window'],
-    note: '专用 create_webview_window wire 仅 cov 层（gap 臂）',
+    note: 'OHOS 上「Webview 窗口」即带 webview 的 OS 窗口：std 臂=createUIAbilityWindow（webview_acquired 等真实断言）；专用 create_webview_window wire 仅 cov 层（gap 臂）。1127 锚修正（review tauri#262 item 12）：原引 webview.url() 同步读是 S2-005 的判据，与建窗能力层级不匹配，已摘除',
   },
   {
     id: 'S2-028',
@@ -288,9 +285,9 @@ export const sowS2: SowItem[] = [
     section: '二',
     group: '子 Webview',
     name: '设置Webview背景',
-    std: ['window Float kind-branch ops (D11: decorations/flags/minimize/show)'],
+    std: ['window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)'],
     cov: ['driver: webview.setBackgroundColor', 'fault: webview.set-background-color.error'],
-    note: 'std 臂为 Float 子窗 setBackgroundColor([255,0,0,255]) smoke（无读回断言，判据弱）；cov 臂补齐',
+    note: 'std 臂=Float 子窗 setBackgroundColor([255,0,0,255]) smoke（无读回 getter，判据=不拒绝；1127 锚名带出 background-color 腿，与能力对齐——review tauri#262 item 12 锚错配修正）；cov 臂补齐',
   },
   {
     id: 'S2-034',
@@ -364,6 +361,7 @@ export const sowS2: SowItem[] = [
     group: 'Cookie',
     name: '删除Cookie',
     std: ['webview.delete_cookie no-op (OHOS platform limit)'],
+    contract: 'reject', // 1127 诚实分档：判据=契约性 no-op（见 note）
     note: '平台 no-op 已披露（side-effect 真调用 + 断言 ok 前缀）',
   },
   {
@@ -527,7 +525,7 @@ export const sowS2: SowItem[] = [
     group: '全屏渲染',
     name: '全屏无黑边',
     manual: ['§7.4|Fullscreen No Black Bars — 全屏无黑边'],
-    note: 'wops:129/609 为 fullscreen API diag/smoke，非黑边判据，不冲突',
+    note: 'wops『window.setFullscreen diag (main window)』/『window.setFullscreen smoke (effect unverifiable from JS)』为 fullscreen API diag/smoke，非黑边判据，不冲突',
   },
 
   // ── 十三、配置开关（4）（MTD §二十七） ──

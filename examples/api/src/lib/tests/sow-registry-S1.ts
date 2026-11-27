@@ -2,7 +2,8 @@ import type { SowItem } from './sow-registry';
 
 // SOW §一 tao 窗口管理：88 条（73✅/15🟡，1109 审计口径）
 // 条目权威源：D:\支撑Task\ohos-sow-20260909.md L30-42（11 能力域行，右格顿号短语逐条）
-// 判定与证据源：tauri\doc\sow\sow-blocks-2026-11.md BLOCK 4 §一 逐条表（L478-608）
+// 判定与证据源：1109 逐条对账结果落档于本表 std/cov/manual/note 字段，引用存在性由
+// scripts\sow-check.mjs 机器把关（原 BLOCK 转录稿已删——含本机路径与计数失真，不可公开）
 // 证据层级：std=标准套件用例精确 name（含 category:'manual' 锚点条目）；cov=覆盖率批条目 name
 // （driver:/side-replay:/bad-input: 前缀，或 window-ops-extra.ts 原名）；manual='§<中文节号>|<用例名称 cell>'（脱 ✅ trim）。
 // 仅 15 条 🟡 带 plan，其余 73 条不带。
@@ -19,15 +20,20 @@ export const sowS1: SowItem[] = [
     ],
     cov: ['driver: cmd.create_ui_ability_windows_x3'],
     manual: ['§36.6|Create UIAbility Instance Window — 第二实例主窗口'],
-    note: 'core:1137（getByLabel+isDecorated 断言）；wops:159（webview_acquired===true 断言）；MTD §36.6:792 T0',
+    note: 'core『create_borderless_window command』（getByLabel+isDecorated 断言）；wops『window.createUIAbilityWindow (webview registered + new instance IPC)』（webview_acquired===true 断言）；MTD §36.6:792 T0',
   },
   {
     id: 'S1-002',
     section: '一',
     group: '创建窗口',
     name: '创建隔离存储窗口',
-    std: ['on_page_load events', 'on_navigation interceptor', 'on_document_title_changed'],
-    note: 'core:915/956/987（三用例内 create_isolated_window，dataSuffix 入参）+ cmd.rs:534-535 data_dir=webview_data_<suffix>_<seq> 隔离存储目录；无「隔离读回」专条，建窗+隔离参数真实走通并带事件断言',
+    std: [
+      'on_page_load events',
+      'on_navigation interceptor',
+      'on_document_title_changed',
+      'webview data_directory storage isolation (isolated window read-back)',
+    ],
+    note: 'core『on_page_load events』『on_navigation interceptor』『on_document_title_changed』（三用例内 create_isolated_window，dataSuffix 入参）+ cmd.rs:534-535 data_dir=webview_data_<suffix>_<seq> 隔离存储目录。1127 补隔离读回（review tauri#262 item 12）：新专条『webview data_directory storage isolation (isolated window read-back)』——隔离窗页面经真实 __TAURI_INTERNALS__.invoke 通道回报自身 localStorage，断言按后端分档：WebView2/webkitgtk 消费 data_directory（读回必须隔离）；WKWebView/ArkWeb 无 per-webview 数据路径（读回证明 no-op：同源隔离窗仍见主窗键、其自写也会落入共享存储），真实隔离杠杆=useHttpsScheme 跨源（https://tauri.localhost vs http://tauri.localhost，读回必须 null）（public/storage-isolation-probe.{html,js} + track_storage_isolation_probe 追踪器）',
   },
   {
     id: 'S1-003',
@@ -36,7 +42,7 @@ export const sowS1: SowItem[] = [
     name: '创建无边框窗口',
     std: ['create_borderless_window command'],
     manual: ['§36.3|Create Borderless Window — 纯无边框子窗口'],
-    note: 'core:1137（断言 decorations=false）+ MTD §36.3:758 T1；同用例兼作多窗口载体',
+    note: 'core『create_borderless_window command』（断言 decorations=false）+ MTD §36.3:758 T1；同用例兼作多窗口载体',
   },
   {
     id: 'S1-004',
@@ -46,7 +52,7 @@ export const sowS1: SowItem[] = [
     std: ['transparent UIAbility window (create + self-driven ops + hilog verifiable)'],
     cov: ['driver: cmd.create_transparent_window', 'driver: cmd.create_transparent_ui_ability_window'],
     manual: ['§36.6|Create Transparent UIAbility — 透明主窗口实例'],
-    note: 'core:2604（webview_acquired 断言）+ MTD §36.6:793 T1；cov 另有 drv:292/310',
+    note: 'core『transparent UIAbility window (create + self-driven ops + hilog verifiable)』（webview_acquired 断言）+ MTD §36.6:793 T1；cov 另有 drv:292/310',
   },
   {
     id: 'S1-005',
@@ -55,7 +61,7 @@ export const sowS1: SowItem[] = [
     name: '创建透明无边框窗口',
     std: ['create_transparent_borderless_window command'],
     manual: ['§十|创建透明无边框 Float 子窗口'],
-    note: 'core:1157（exists+decorated=false 断言）+ MTD §十:251 T0',
+    note: 'core『create_transparent_borderless_window command』（exists+decorated=false 断言）+ MTD §十:251 T0',
   },
   {
     id: 'S1-006',
@@ -64,7 +70,7 @@ export const sowS1: SowItem[] = [
     name: '创建有边框透明窗',
     cov: ['driver: cmd.create_transparent_window'],
     manual: ['§十|创建透明有边框 Float 子窗口'],
-    note: 'MTD §十:252 T1（有步骤+预期①-④）；std 无专条（core:1157 为无边框变体）；cov drv:292',
+    note: 'MTD §十:252 T1（有步骤+预期①-④）；std 无专条（core『create_transparent_borderless_window command』为无边框变体）；cov drv:292',
   },
   {
     id: 'S1-007',
@@ -89,7 +95,7 @@ export const sowS1: SowItem[] = [
     std: ['@tauri-apps/api/window.innerSize'],
     cov: ['driver: win.innerSize'],
     manual: ['§36.1|Window DPI — inner/outer 尺寸与位置读取'],
-    note: 'wdpi:10 + MTD §36.1:741 T0；cov drv:493',
+    note: 'wdpi『@tauri-apps/api/window.innerSize』 + MTD §36.1:741 T0；cov drv:493',
   },
   {
     id: 'S1-009',
@@ -99,7 +105,7 @@ export const sowS1: SowItem[] = [
     std: ['@tauri-apps/api/window.outerSize'],
     cov: ['driver: win.outerSize'],
     manual: ['§36.1|Window DPI — inner/outer 尺寸与位置读取'],
-    note: 'wdpi:22；cov drv:496',
+    note: 'wdpi『@tauri-apps/api/window.outerSize』；cov drv:496',
   },
   {
     id: 'S1-010',
@@ -109,7 +115,7 @@ export const sowS1: SowItem[] = [
     std: ['@tauri-apps/api/window.innerPosition'],
     cov: ['driver: win.innerPosition'],
     manual: ['§36.1|Window DPI — inner/outer 尺寸与位置读取'],
-    note: 'wdpi:33；cov drv:499',
+    note: 'wdpi『@tauri-apps/api/window.innerPosition』；cov drv:499',
   },
   {
     id: 'S1-011',
@@ -122,7 +128,7 @@ export const sowS1: SowItem[] = [
     ],
     cov: ['driver: win.outerPosition'],
     manual: ['§36.1|Window DPI — inner/outer 尺寸与位置读取'],
-    note: 'wdpi:45 + wops:557（读回 orig）；cov drv:502',
+    note: 'wdpi『@tauri-apps/api/window.outerPosition』 + wops『window.setOuterPosition smoke (move unverifiable from JS)』（读回 orig）；cov drv:502',
   },
   {
     id: 'S1-012',
@@ -130,7 +136,7 @@ export const sowS1: SowItem[] = [
     group: '窗口几何',
     name: '设置窗口尺寸',
     std: ['window.set_size resizes window (resize)', 'window.setInnerSize actually resizes (main window)'],
-    note: 'core:1269（innerSize>0 断言）+ wops:361（精确读回）',
+    note: 'core『window.set_size resizes window (resize)』（innerSize>0 断言）+ wops『window.setInnerSize actually resizes (main window)』（精确读回）',
   },
   {
     id: 'S1-013',
@@ -139,7 +145,7 @@ export const sowS1: SowItem[] = [
     name: '设置窗口位置',
     std: ['window.set_position moves window (moveWindowTo)'],
     manual: ['§36.5|setOuterPosition — 子窗口位置移动'],
-    note: 'core:1247（outerPosition≈100±50 断言）+ MTD §36.5:778 T0',
+    note: 'core『window.set_position moves window (moveWindowTo)』（outerPosition≈100±50 断言）+ MTD §36.5:778 T0',
   },
   {
     id: 'S1-014',
@@ -149,7 +155,7 @@ export const sowS1: SowItem[] = [
     std: ['window.setSizeConstraints runtime min-floor clamps (and null clears)'],
     cov: ['driver: win.setMinSize'],
     manual: ['§36.9|Set Min Size — 最小尺寸限制'],
-    note: 'wops:467 用例内 setMinSize(null)/setMinSize(600,400) 往返 + min-floor 钳制断言；MTD §36.9:824 T1；cov drv:643',
+    note: 'wops『window.setSizeConstraints runtime min-floor clamps (and null clears)』用例内 setMinSize(null)/setMinSize(600,400) 往返 + min-floor 钳制断言；MTD §36.9:824 T1；cov drv:643',
   },
   {
     id: 'S1-015',
@@ -167,7 +173,7 @@ export const sowS1: SowItem[] = [
     name: '设置尺寸约束',
     std: ['window.setSizeConstraints runtime min-floor clamps (and null clears)'],
     cov: ['driver: win.setSizeConstraints'],
-    note: 'wops:467（钳制+null 清除精确读回，PC/2in1 门控）；cov drv:628',
+    note: 'wops『window.setSizeConstraints runtime min-floor clamps (and null clears)』（钳制+null 清除精确读回，PC/2in1 门控）；cov drv:628',
   },
   {
     id: 'S1-017',
@@ -199,7 +205,7 @@ export const sowS1: SowItem[] = [
     name: '最大化窗口',
     std: ['window.maximize then is_maximized reflects state', 'window.maximize fills monitor'],
     cov: ['driver: float.maximize+unmaximize'],
-    note: 'core:1199（断言 true）+ wops:573（outerSize≥90% 显示器断言）；cov float.maximize+unmaximize(drv:676)',
+    note: 'core『window.maximize then is_maximized reflects state』（断言 true）+ wops『window.maximize fills monitor』（outerSize≥90% 显示器断言）；cov float.maximize+unmaximize(drv:676)',
   },
   {
     id: 'S1-020',
@@ -207,7 +213,7 @@ export const sowS1: SowItem[] = [
     group: '窗口状态控制',
     name: '还原窗口',
     std: ['window.unmaximize (recover) then is_maximized reflects state'],
-    note: 'core:1211（断言 false）',
+    note: 'core『window.unmaximize (recover) then is_maximized reflects state』（断言 false）',
   },
   {
     id: 'S1-021',
@@ -220,7 +226,7 @@ export const sowS1: SowItem[] = [
     ],
     cov: ['driver: float.minimize+unminimize'],
     manual: ['§二十一|窗口最小化与恢复', '§36.5|Minimize (2s restore) — 最小化自动恢复'],
-    note: 'wops:621（minimize+unminimize 不抛）+ MTD §二十一:440 T0（任务栏恢复判据）/§36.5:781 T1；core:1287 同语义用例 category:manual（真断言但 runner 不过滤执行，不计 ✅ 依据，按锚点条目录入）；cov float.minimize+unminimize(drv:679)',
+    note: 'wops『window.minimize smoke (effect unverifiable from JS)』（minimize+unminimize 不抛）+ MTD §二十一:440 T0（任务栏恢复判据）/§36.5:781 T1；core『window.minimize then is_minimized reflects state』同语义用例 category:manual（真断言但 runner 不过滤执行，不计 ✅ 依据，按锚点条目录入）；cov float.minimize+unminimize(drv:679)',
   },
   {
     id: 'S1-022',
@@ -239,7 +245,7 @@ export const sowS1: SowItem[] = [
     std: ['window.setFullscreen smoke (effect unverifiable from JS)'],
     cov: ['driver: win.setFullscreen.off'],
     manual: ['§36.5|Toggle Fullscreen — 沉浸全屏开关'],
-    note: 'wops:609（true→false 不抛）+ MTD §36.5:782 T0（isFullscreen 翻转判据）；wops:129 diag 用例无硬断言（仅日志）不计入依据；cov drv:634',
+    note: 'wops『window.setFullscreen smoke (effect unverifiable from JS)』（true→false 不抛）+ MTD §36.5:782 T0（isFullscreen 翻转判据）；wops『window.setFullscreen diag (main window)』diag 用例无硬断言（仅日志）不计入依据；cov drv:634',
   },
   {
     id: 'S1-024',
@@ -248,7 +254,7 @@ export const sowS1: SowItem[] = [
     name: '简单全屏',
     std: ['window.setFullscreen smoke (effect unverifiable from JS)'],
     manual: ['§36.5|Toggle Fullscreen — 沉浸全屏开关'],
-    note: 'wops:614-616 setFullscreen(true) 单程 smoke + MTD §36.5:782；映射假设：简单全屏=setFullscreen(true) 基本全屏（与 toggle 区分），与上一条共用 API 族证据',
+    note: 'wops『window.setFullscreen smoke (effect unverifiable from JS)』setFullscreen(true) 单程 smoke + MTD §36.5:782；映射假设：简单全屏=setFullscreen(true) 基本全屏（与 toggle 区分），与上一条共用 API 族证据',
   },
   {
     id: 'S1-025',
@@ -258,7 +264,7 @@ export const sowS1: SowItem[] = [
     std: ['window.setAlwaysOnTop smoke (dispatches to setWindowTopmost API 14+; z-order effect unverifiable from JS)'],
     cov: ['driver: win.setAlwaysOnTop'],
     manual: ['§36.5|Toggle AlwaysOnTop — 跨应用置顶'],
-    note: 'wops:633（<API14 必拒断言 650-653）+ MTD §36.5:784 T1；cov drv:568',
+    note: 'wops『window.setAlwaysOnTop smoke (dispatches to setWindowTopmost API 14+; z-order effect unverifiable from JS)』（<API14 必拒断言）+ MTD §36.5:784 T1；cov drv:568',
   },
   {
     id: 'S1-026',
@@ -270,7 +276,7 @@ export const sowS1: SowItem[] = [
       'ut_window.show keeps maximized state (#237, main window)',
     ],
     manual: ['§36.5|Hide/Show (2s restore) — 主窗口 hide 契约拒绝 + minimize 验证'],
-    note: 'wops:848（契约拒绝断言）+ wops:877（双臂断言 897-912）+ MTD §36.5:783 T0；主窗 hide 在 OHOS=契约拒绝（拒绝即正确）',
+    note: 'wops『ut_window.hide rejects on OHOS (main window, #237)』（契约拒绝断言）+ wops『ut_window.show keeps maximized state (#237, main window)』（双臂断言）+ MTD §36.5:783 T0；主窗 hide 在 OHOS=契约拒绝（拒绝即正确）',
   },
   {
     id: 'S1-027',
@@ -280,7 +286,7 @@ export const sowS1: SowItem[] = [
     std: ['window cursor smoke (E group, no getter)'],
     cov: ['driver: win.setFocus'],
     manual: ['§十八|Window Focus 多窗口层级验证'],
-    note: 'wops:971 setFocus smoke（E 组）+ MTD §十八:402 T0（setFocus→raiseToAppTop 层级判据，2026-08-31 PASS）；cov drv:631',
+    note: 'wops『window cursor smoke (E group, no getter)』setFocus smoke（E 组）+ MTD §十八:402 T0（setFocus→raiseToAppTop 层级判据，2026-08-31 PASS）；cov drv:631',
   },
 
   // ── 窗口属性（15：11✅/4🟡）──
@@ -292,7 +298,7 @@ export const sowS1: SowItem[] = [
     std: ['window.set_title tracked ack: real window resolves, illegal label rejects (#219)'],
     cov: ['driver: win.setTitle'],
     manual: ['§36.9|Set Title — 主窗口标题设置'],
-    note: 'core:2736（real window resolve + bogus reject 双断言）+ MTD §36.9:823 T0；cov drv:562',
+    note: 'core『window.set_title tracked ack: real window resolves, illegal label rejects (#219)』（real window resolve + bogus reject 双断言）+ MTD §36.9:823 T0；cov drv:562',
   },
   {
     id: 'S1-029',
@@ -311,7 +317,7 @@ export const sowS1: SowItem[] = [
     name: '设置窗口装饰',
     std: ['window.setDecorations toggles decorations state'],
     manual: ['§36.3|Toggle Decorations — 主窗口装饰开关'],
-    note: 'core:1115（isDecorated 翻转断言）+ MTD §36.3:757 T0',
+    note: 'core『window.setDecorations toggles decorations state』（isDecorated 翻转断言）+ MTD §36.3:757 T0',
   },
   {
     id: 'S1-031',
@@ -320,10 +326,10 @@ export const sowS1: SowItem[] = [
     name: '切换窗口装饰',
     std: [
       'window.setDecorations toggles decorations state',
-      'window Float kind-branch ops (D11: decorations/flags/minimize/show)',
+      'window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)',
     ],
     manual: ['§36.3|Toggle Decorations — 主窗口装饰开关'],
-    note: '同 core:1115（off/on 双腿）+ wops:786 D11 Float setDecorations 读回断言（799-803）；同一用例覆盖两条',
+    note: '同 core『window.setDecorations toggles decorations state』（off/on 双腿）+ wops『window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)』Float setDecorations 读回断言；同一用例覆盖两条',
   },
   {
     id: 'S1-032',
@@ -332,11 +338,11 @@ export const sowS1: SowItem[] = [
     name: '设置可调整',
     std: [
       'window decoration flags smoke (D group, main window contract #238)',
-      'window Float kind-branch ops (D11: decorations/flags/minimize/show)',
+      'window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)',
     ],
     cov: ['driver: win.setResizable'],
     manual: ['§36.7|Toggle Resizable — 缩放 flag（双腿）'],
-    note: 'wops:771-774 smoke + wops:813/821 Float isResizable 读回断言 + MTD §36.7:804 T1；cov drv:574',
+    note: 'wops『window decoration flags smoke (D group, main window contract #238)』smoke + wops『window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)』Float isResizable 读回断言 + MTD §36.7:804 T1；cov drv:574',
   },
   {
     id: 'S1-033',
@@ -345,12 +351,12 @@ export const sowS1: SowItem[] = [
     name: '设置可最大化',
     std: [
       'window decoration flags smoke (D group, main window contract #238)',
-      'window Float kind-branch ops (D11: decorations/flags/minimize/show)',
+      'window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)',
       'ut_window main window decoration buttons (#238)',
     ],
     cov: ['driver: win.setMaximizable'],
     manual: ['§36.7|Toggle Maximizable — 最大化 flag'],
-    note: 'wops:745-746 smoke + 809/817 Float 读回 + 921 #238 主窗必拒断言 + MTD §36.7:802 T1；cov drv:577',
+    note: 'wops『window decoration flags smoke (D group, main window contract #238)』smoke（含 #238 主窗必拒断言）+ wops『window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)』Float 读回 + MTD §36.7:802 T1；cov drv:577',
   },
   {
     id: 'S1-034',
@@ -359,12 +365,12 @@ export const sowS1: SowItem[] = [
     name: '设置可最小化',
     std: [
       'window decoration flags smoke (D group, main window contract #238)',
-      'window Float kind-branch ops (D11: decorations/flags/minimize/show)',
+      'window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)',
       'ut_window main window decoration buttons (#238)',
     ],
     cov: ['driver: win.setMinimizable'],
     manual: ['§36.7|Toggle Minimizable — 最小化 flag'],
-    note: 'wops:747-748 + 811-812/819-820 + 939-940 + MTD §36.7:803 T1；cov drv:580',
+    note: 'wops『window decoration flags smoke (D group, main window contract #238)』主窗 smoke + wops『window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)』Float flag 读回 + MTD §36.7:803 T1；cov drv:580',
   },
   {
     id: 'S1-035',
@@ -373,12 +379,12 @@ export const sowS1: SowItem[] = [
     name: '设置可关闭',
     std: [
       'window decoration flags smoke (D group, main window contract #238)',
-      'window Float kind-branch ops (D11: decorations/flags/minimize/show)',
+      'window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)',
       'ut_window main window decoration buttons (#238)',
     ],
     cov: ['driver: win.setClosable'],
     manual: ['§36.7|Toggle Closable — 关闭按钮显隐'],
-    note: 'wops:743-744 + 807-808/815-816 + 941 + MTD §36.7:801 Toggle Closable T0（唯一被 SubWindowPage 消费的 flag，✕ 显隐判据）；cov drv:583',
+    note: 'wops『window decoration flags smoke (D group, main window contract #238)』主窗 smoke + wops『window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)』Float flag 读回 + MTD §36.7:801 Toggle Closable T0（唯一被 SubWindowPage 消费的 flag，✕ 显隐判据）；cov drv:583',
   },
   {
     id: 'S1-036',
@@ -390,7 +396,7 @@ export const sowS1: SowItem[] = [
       'ut_window.show keeps maximized state (#237, main window)',
     ],
     manual: ['§36.5|Hide/Show (2s restore) — 主窗口 hide 契约拒绝 + minimize 验证'],
-    note: '与「隐藏显示窗口」同 API 族：wops:848/877 + MTD §36.5:783；Tauri 无独立 setVisible，SOW 两条共用一组用例',
+    note: '与「隐藏显示窗口」同 API 族：wops『ut_window.hide rejects on OHOS (main window, #237)』/『ut_window.show keeps maximized state (#237, main window)』+ MTD §36.5:783；Tauri 无独立 setVisible，SOW 两条共用一组用例',
   },
   {
     id: 'S1-037',
@@ -400,6 +406,7 @@ export const sowS1: SowItem[] = [
     std: ['window.setSkipTaskbar (taskbar icon toggle)'],
     cov: ['driver: win.setSkipTaskbar'],
     manual: ['§36.10|Set SkipTaskbar — 任务栏图标开关'],
+    contract: 'reject', // 1127 诚实分档：判据=显式契约拒绝（见 note）
     plan: { kind: 'manual', batch: 'C3' },
     note: 'C3 已挂接（2026-11-10）：core.ts manual 锚点 + TR 按钮 skipTaskbarState 翻转 + MTD §36.10 新行。真机第 4 轮（16:30）定性：显式契约拒绝「setSkipTaskbar is not supported on OpenHarmony」（runtime-wry ohos_unsupported 家族）——OHOS 任务栏图标与窗口/Ability 生命周期绑定，无“只藏任务栏图标”系统 API，上游 Android/iOS 同桶 unsupported。判据改判=点击后日志出现 not supported on OpenHarmony 即 PASS（诚实契约，C2 barcodeOpenAppSettings 先例）；cov drv:571 另路径保留',
   },
@@ -411,14 +418,14 @@ export const sowS1: SowItem[] = [
     std: ['window.setContentProtection (demo cmd)'],
     cov: ['driver: win.setContentProtected'],
     manual: ['§二十一|窗口隐私模式 — 截屏变黑（#115）'],
-    note: 'wops:980（往返）+ MTD §二十一:443 privacy-mode T1（截屏变黑判据，2026-09-20 PASS）+ TR Content Protection 按钮(3880)；cov drv:607 setContentProtected',
+    note: 'wops『window.setContentProtection (demo cmd)』（往返）+ MTD §二十一:443 privacy-mode T1（截屏变黑判据，2026-09-20 PASS）+ TR Content Protection 按钮(3880)；cov drv:607 setContentProtected',
   },
   {
     id: 'S1-039',
     section: '一',
     group: '窗口属性',
     name: '设置窗口背景色',
-    std: ['window Float kind-branch ops (D11: decorations/flags/minimize/show)'],
+    std: ['window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)'],
     cov: ['driver: win.setBackgroundColor'],
     manual: [
       '§36.4|Set BG Red — 子窗口背景变红',
@@ -426,7 +433,7 @@ export const sowS1: SowItem[] = [
       '§36.4|Set BG Green — 全透明背景',
       '§36.4|Reset BG — 恢复默认背景',
     ],
-    note: 'wops:836 Float setBackgroundColor smoke + MTD §36.4:767-770 四行 T0/T1（Red/Blue/Green/Reset）；cov drv:610',
+    note: 'wops『window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)』Float setBackgroundColor smoke + MTD §36.4:767-770 四行 T0/T1（Red/Blue/Green/Reset）；cov drv:610',
   },
   {
     id: 'S1-040',
@@ -459,6 +466,7 @@ export const sowS1: SowItem[] = [
     std: ['window.setIcon (1x1 PNG)'],
     cov: ['window setIcon with raw bytes (error path acceptable)', 'setIcon with valid 1x1 PNG (dispatcher + arm)'],
     manual: ['§36.10|Set Icon — 窗口图标设置'],
+    contract: 'reject', // 1127 诚实分档：判据=显式契约拒绝（见 note）
     plan: { kind: 'manual', batch: 'C3' },
     note: 'C3 已挂接（2026-11-10）：core.ts manual 锚点 + TR 按钮（1x1 透明 PNG base64 解码 → Uint8Array）+ MTD §36.10 新行。真机第 4 轮（16:31）定性：显式契约拒绝「setIcon is not supported on OpenHarmony」（ohos_unsupported 家族，lib.rs:2994）——应用图标打包期由 module.json5 固定，窗口级运行时换图标非平台能力（tao 注释：Icon is NOT changeable at runtime）。即 §36.9:823 原备注的精神是对的：JS API 面（d.ts:940）存在但运行时拒绝。判据改判=点击后日志出现 not supported on OpenHarmony 即 PASS；cov wox 双臂保留',
   },
@@ -471,16 +479,16 @@ export const sowS1: SowItem[] = [
     name: '查询最大化',
     std: ['window.is_maximized returns boolean'],
     cov: ['driver: win.isMaximized'],
-    note: 'core:1178（boolean 断言）+ wops:897 等读回断言；cov drv:514',
+    note: 'core『window.is_maximized returns boolean』（boolean 断言）+ wops『ut_window.show keeps maximized state (#237, main window)』等读回断言；cov drv:514',
   },
   {
     id: 'S1-044',
     section: '一',
     group: '窗口状态查询',
     name: '查询最小化',
-    std: ['window.is_minimized returns boolean', 'window Float kind-branch ops (D11: decorations/flags/minimize/show)'],
+    std: ['window.is_minimized returns boolean', 'window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)'],
     cov: ['driver: win.isMinimized'],
-    note: 'core:1188 + wops:830 Float isMinimized round-trip 断言；cov drv:517',
+    note: 'core『window.is_minimized returns boolean』 + wops『window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)』Float isMinimized round-trip 断言；cov drv:517',
   },
   {
     id: 'S1-045',
@@ -489,7 +497,7 @@ export const sowS1: SowItem[] = [
     name: '查询全屏状态',
     cov: ['driver: win.isFullscreen'],
     manual: ['§36.5|Toggle Fullscreen — 沉浸全屏开关'],
-    note: 'MTD §36.5:782 判据② isFullscreen 读数翻转；std wops:136-149 isFullscreen 仅 diag 读数无断言（不录入）；cov drv:505',
+    note: 'MTD §36.5:782 判据② isFullscreen 读数翻转；std wops『window.setFullscreen diag (main window)』isFullscreen 仅 diag 读数无断言（不录入）；cov drv:505',
   },
   {
     id: 'S1-046',
@@ -499,7 +507,7 @@ export const sowS1: SowItem[] = [
     std: ['@tauri-apps/api/window.isFocused'],
     cov: ['driver: win.isFocused'],
     manual: ['§36.1|isFocused — 前台聚焦读取'],
-    note: 'core:540（boolean 断言）+ MTD §36.1:743 T0；cov drv:508',
+    note: 'core『@tauri-apps/api/window.isFocused』（boolean 断言）+ MTD §36.1:743 T0；cov drv:508',
   },
   {
     id: 'S1-047',
@@ -522,17 +530,17 @@ export const sowS1: SowItem[] = [
     name: '查询置顶状态',
     cov: ['driver: win.isAlwaysOnTop'],
     manual: ['§36.5|Toggle AlwaysOnTop — 跨应用置顶'],
-    note: 'MTD §36.5:784 判据① isAlwaysOnTop 读数翻转；std wops:660 明确不做该读回（不录入）；cov drv:535',
+    note: 'MTD §36.5:784 判据① isAlwaysOnTop 读数翻转；std wops『window.setAlwaysOnTop smoke (dispatches to setWindowTopmost API 14+; z-order effect unverifiable from JS)』明确不做该读回（不录入）；cov drv:535',
   },
   {
     id: 'S1-049',
     section: '一',
     group: '窗口状态查询',
     name: '查询可调整',
-    std: ['window Float kind-branch ops (D11: decorations/flags/minimize/show)'],
+    std: ['window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)'],
     cov: ['driver: win.isResizable'],
     manual: ['§36.7|Toggle Resizable — 缩放 flag（双腿）'],
-    note: 'wops:814/822 Float isResizable 读回断言 + MTD §36.7:804 判据①；cov drv:520',
+    note: 'wops『window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)』Float isResizable 读回断言 + MTD §36.7:804 判据①；cov drv:520',
   },
   {
     id: 'S1-050',
@@ -541,10 +549,10 @@ export const sowS1: SowItem[] = [
     name: '查询装饰状态',
     std: [
       'window.isDecorated returns boolean',
-      'window Float kind-branch ops (D11: decorations/flags/minimize/show)',
+      'window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)',
     ],
     cov: ['driver: win.isDecorated'],
-    note: 'core:1105 + wops:799-803；cov drv:511',
+    note: 'core『window.isDecorated returns boolean』 + wops『window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)』Float 读回断言；cov drv:511',
   },
   {
     id: 'S1-051',
@@ -554,7 +562,7 @@ export const sowS1: SowItem[] = [
     std: ['@tauri-apps/api/window.scaleFactor'],
     cov: ['driver: win.scaleFactor'],
     manual: ['§36.1|Window DPI — inner/outer 尺寸与位置读取'],
-    note: 'wdpi:55 + MTD §36.1:741 判据①五项含 scaleFactor；cov drv:544',
+    note: 'wdpi『@tauri-apps/api/window.scaleFactor』 + MTD §36.1:741 判据①五项含 scaleFactor；cov drv:544',
   },
   {
     id: 'S1-052',
@@ -573,46 +581,46 @@ export const sowS1: SowItem[] = [
     section: '一',
     group: '窗口效果',
     name: '设置窗口效果',
-    std: ['window.setEffects (Blur/Acrylic) — no throw'],
+    std: ['window.setEffects (Blur/Acrylic) — negative control + live cycle'],
     cov: ['driver: win.setEffects.blur', 'side-replay: side.win.setEffects.acrylic', 'side-replay: side.win.setEffects.mica'],
-    note: 'core:2531（auto，desktop 门控）+ MTD §19:409 自动用例注记（§十九头部引文行，非表格用例行）；cov drv:637 + side acrylic/mica(drv:971-977)',
+    note: 'core『window.setEffects (Blur/Acrylic) — negative control + live cycle』（auto，desktop 门控）+ MTD §19:409 自动用例注记（§十九头部引文行，非表格用例行）；cov drv:637 + side acrylic/mica(drv:971-977)',
   },
   {
     id: 'S1-054',
     section: '一',
     group: '窗口效果',
     name: '设置模糊半径',
-    std: ['window.setEffects (Blur/Acrylic) — no throw'],
+    std: ['window.setEffects (Blur/Acrylic) — negative control + live cycle'],
     manual: ['§十九|Blur effect visible'],
-    note: 'core:2539 setEffects({effects:[Blur], radius:25})（同上用例内）+ MTD §十九:416 Blur radius=25 T0；同一用例覆盖两条',
+    note: 'core『window.setEffects (Blur/Acrylic) — negative control + live cycle』setEffects({effects:[Blur], radius:25})（同上用例内）+ MTD §十九:416 Blur radius=25 T0；同一用例覆盖两条',
   },
   {
     id: 'S1-055',
     section: '一',
     group: '窗口效果',
     name: '设置亚克力效果',
-    std: ['window.setEffects (Blur/Acrylic) — no throw'],
+    std: ['window.setEffects (Blur/Acrylic) — negative control + live cycle'],
     manual: ['§十九|Acrylic effect visible'],
-    note: 'core:2540 Acrylic + MTD §十九:417 Acrylic T1；同一用例覆盖两条',
+    note: 'core『window.setEffects (Blur/Acrylic) — negative control + live cycle』Acrylic + MTD §十九:417 Acrylic T1；同一用例覆盖两条',
   },
   {
     id: 'S1-056',
     section: '一',
     group: '窗口效果',
     name: '清除窗口效果',
-    std: ['window.setEffects (Blur/Acrylic) — no throw'],
+    std: ['window.setEffects (Blur/Acrylic) — negative control + live cycle'],
     cov: ['driver: win.clearEffects', 'window setEffects/clearEffects retry (Effect enum in scope)'],
     manual: ['§十九|clearEffects removes blur'],
-    note: 'core:2541 clearEffects（同 auto 用例内）+ MTD §十九:418 clearEffects T0（双清除判据）；cov drv:640 + wox:189',
+    note: 'core『window.setEffects (Blur/Acrylic) — negative control + live cycle』clearEffects（同 auto 用例内）+ MTD §十九:418 clearEffects T0（双清除判据）；cov drv:640 + wox:189',
   },
   {
     id: 'S1-057',
     section: '一',
     group: '窗口效果',
     name: '构建期窗口效果',
-    std: ['vibrancy build-time effects (WindowBuilder::effects) — no throw'],
+    std: ['vibrancy build-time effects (WindowBuilder::effects) — validated param + created'],
     manual: ['§十九|build-time Blur effect visible'],
-    note: 'core:2586 + MTD §十九:419 build-time T0',
+    note: 'core『vibrancy build-time effects (WindowBuilder::effects) — validated param + created』 + MTD §十九:419 build-time T0',
   },
 
   // ── 窗口事件（5：3✅/2🟡）──
@@ -623,7 +631,7 @@ export const sowS1: SowItem[] = [
     name: '监听窗口调整',
     cov: ['driver: win.listen.onResized'],
     manual: ['§36.9|Watch Window Events — 事件监听'],
-    note: 'MTD §36.9:821 Watch Window Events T1（监听 Resized/Moved/FocusChanged，步骤+判据）；std 无 onResized 专条（core:712 on_window_event 仅数组断言）；cov drv:652',
+    note: 'MTD §36.9:821 Watch Window Events T1（监听 Resized/Moved/FocusChanged，步骤+判据）；std 无 onResized 专条（core『on_window_event』仅数组断言）；cov drv:652',
   },
   {
     id: 'S1-059',
@@ -642,7 +650,7 @@ export const sowS1: SowItem[] = [
     std: ['@tauri-apps/api/window.onFocusChanged'],
     cov: ['driver: win.onFocusChanged'],
     manual: ['§36.1|Watch onFocusChanged — 聚焦变化事件'],
-    note: 'core:625（unlisten 断言）+ MTD §36.1:744 T1；cov drv:658',
+    note: 'core『@tauri-apps/api/window.onFocusChanged』（unlisten 断言）+ MTD §36.1:744 T1；cov drv:658',
   },
   {
     id: 'S1-061',
@@ -678,7 +686,7 @@ export const sowS1: SowItem[] = [
     ],
     cov: ['driver: float.setSize+setPosition'],
     manual: ['§36.5|setOuterPosition — 子窗口位置移动', '§36.5|setInnerSize — 子窗口缩放与还原'],
-    note: 'wops:530（精确读回断言）+ core:1858 + MTD §36.5:778/779 T0；cov float.setSize+setPosition(drv:673)',
+    note: 'wops『float window setInnerSize exact readback (decor=0)』（精确读回断言）+ core『float sub-window hide+show+center (visibility mirror asserted)』 + MTD §36.5:778/779 T0；cov float.setSize+setPosition(drv:673)',
   },
   {
     id: 'S1-064',
@@ -694,10 +702,10 @@ export const sowS1: SowItem[] = [
     section: '一',
     group: '子窗口（Float）',
     name: '最小化子窗口',
-    std: ['window Float kind-branch ops (D11: decorations/flags/minimize/show)'],
+    std: ['window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)'],
     cov: ['driver: float.minimize+unminimize'],
     manual: ['§36.5|Minimize (2s restore) — 最小化自动恢复'],
-    note: 'wops:786 D11 ③ minimize→show round-trip 断言（828-833）+ MTD §36.5:781 互补；cov float.minimize+unminimize(drv:679)',
+    note: 'wops『window Float kind-branch ops (D11: decorations/flags/minimize/show/background-color)』③ minimize→show round-trip 断言+ MTD §36.5:781 互补；cov float.minimize+unminimize(drv:679)',
   },
   {
     id: 'S1-066',
@@ -749,7 +757,7 @@ export const sowS1: SowItem[] = [
     name: '子窗口置顶聚焦',
     cov: ['driver: float.setFocus+alwaysOnTop', 'float window dragging (startDragging/startResizeDragging)'],
     manual: ['§十八|Window Focus 多窗口层级验证'],
-    note: 'MTD §十八:402 T0（子窗口 setFocus→raiseToAppTop 层级+hilog 判据，2026-08-31 PASS）；std wops:971 setFocus smoke 为主窗（不录入）；cov float.setFocus+alwaysOnTop(drv:803) + wox:179',
+    note: 'MTD §十八:402 T0（子窗口 setFocus→raiseToAppTop 层级+hilog 判据，2026-08-31 PASS）；std wops『window cursor smoke (E group, no getter)』setFocus smoke 为主窗（不录入）；cov float.setFocus+alwaysOnTop(drv:803) + wox:179',
   },
 
   // ── 显示器与 DPI（10：8✅/2🟡）──
@@ -761,7 +769,7 @@ export const sowS1: SowItem[] = [
     std: ['@tauri-apps/api/window.currentMonitor', 'ohos-adapter.monitor.real-size'],
     cov: ['driver: win.currentMonitor'],
     manual: ['§36.1|currentMonitor — 分辨率/缩放/位置'],
-    note: 'core:552（non-null+size/position 断言，desktop 门控）+ adp:33 ohos-adapter.monitor.real-size + MTD §36.1:742 T1；cov drv:547',
+    note: 'core『@tauri-apps/api/window.currentMonitor』（non-null+size/position 断言，desktop 门控）+ adp:33 ohos-adapter.monitor.real-size + MTD §36.1:742 T1；cov drv:547',
   },
   {
     id: 'S1-072',
@@ -798,7 +806,7 @@ export const sowS1: SowItem[] = [
     group: '显示器与 DPI',
     name: '读取显示器尺寸',
     std: ['@tauri-apps/api/window.currentMonitor', 'ohos-adapter.monitor.real-size'],
-    note: 'core:558-559 monitor.size>0 断言 + adp:39-51 size>0+连续调用稳定断言',
+    note: 'core『@tauri-apps/api/window.currentMonitor』monitor.size>0 断言 + adp:39-51 size>0+连续调用稳定断言',
   },
   {
     id: 'S1-076',
@@ -861,7 +869,7 @@ export const sowS1: SowItem[] = [
       '§36.2|Get Cursor Position — 光标坐标读取',
       '§三十八|cursor-position-freshness 注入式真值（段 0-3 真机段）',
     ],
-    note: 'core:2221 + MTD §36.2:750 T1 + MTD §三十八 cursor-position-freshness 行（契约+fail-safe 纪律章）；adp:214 cursor-position-freshness 为 category:manual 锚点条目（存档协议）；cov drv:598',
+    note: 'core『@tauri-apps/api/window.cursorPosition』 + MTD §36.2:750 T1 + MTD §三十八 cursor-position-freshness 行（契约+fail-safe 纪律章）；adp:214 cursor-position-freshness 为 category:manual 锚点条目（存档协议）；cov drv:598',
   },
   {
     id: 'S1-082',
@@ -871,7 +879,7 @@ export const sowS1: SowItem[] = [
     std: ['window cursor smoke (E group, no getter)'],
     cov: ['driver: win.setCursorIcon'],
     manual: ['§36.8|Cycle CursorIcon — 光标样式循环'],
-    note: 'wops:968-969 setCursorIcon 9 种循环 smoke（desktop 门控）+ MTD §36.8:812 Cycle CursorIcon T1；cov drv:592',
+    note: 'wops『window cursor smoke (E group, no getter)』setCursorIcon 9 种循环 smoke（desktop 门控）+ MTD §36.8:812 Cycle CursorIcon T1；cov drv:592',
   },
   {
     id: 'S1-083',
@@ -881,7 +889,7 @@ export const sowS1: SowItem[] = [
     std: ['window cursor smoke (E group, no getter)'],
     cov: ['driver: win.setCursorVisible'],
     manual: ['§36.8|setCursorVisible(false) — 光标全局隐藏'],
-    note: 'wops:966-967 smoke + MTD §36.8:811 T0（全局隐藏+3s 恢复判据）；cov drv:589',
+    note: 'wops『window cursor smoke (E group, no getter)』smoke + MTD §36.8:811 T0（全局隐藏+3s 恢复判据）；cov drv:589',
   },
   {
     id: 'S1-084',
@@ -891,7 +899,7 @@ export const sowS1: SowItem[] = [
     std: ['version-gate negative probes (print API 14 / setCursorGrab API 22)'],
     cov: ['driver: win.setCursorGrab'],
     manual: ['§36.9|setCursorGrab — 光标锁定窗口'],
-    note: 'wops:667/702-709 version-gate 负断言（<API22 必拒+错误文案断言）+ MTD §36.9:820 setCursorGrab T0（锁定/失焦解锁判据）；cov drv:595',
+    note: 'wops『version-gate negative probes (print API 14 / setCursorGrab API 22)』version-gate 负断言（<API22 必拒+错误文案断言）+ MTD §36.9:820 setCursorGrab T0（锁定/失焦解锁判据）；cov drv:595',
   },
   {
     id: 'S1-085',
@@ -901,7 +909,7 @@ export const sowS1: SowItem[] = [
     std: ['window.setIgnoreCursorEvents smoke', 'set_ignore_cursor_events is no-op (OHOS platform limit)'],
     cov: ['driver: win.setIgnoreCursorEvents'],
     manual: ['§二十八|setIgnoreCursorEvents(true) 触摸穿透'],
-    note: 'wops:719 smoke + core:2496（平台契约）+ MTD §二十八 按钮路径；cov drv:601',
+    note: 'wops『window.setIgnoreCursorEvents smoke』smoke + core『set_ignore_cursor_events is no-op (OHOS platform limit)』（平台契约）+ MTD §二十八 按钮路径；cov drv:601',
   },
   {
     id: 'S1-086',
@@ -929,6 +937,7 @@ export const sowS1: SowItem[] = [
     std: ['window.startDragging (mouse drag)'],
     cov: ['float window dragging (startDragging/startResizeDragging)'],
     manual: ['§36.10|Window Dragging — 窗口拖拽'],
+    contract: 'reject', // 1127 诚实分档：判据=显式契约拒绝（真实拖拽能力由手动体验行承载，见 note）
     plan: { kind: 'manual', batch: 'C3' },
     note: 'C3 已挂接（2026-11-10）：core.ts manual 锚点 + TR startDragging 按钮 + MTD §36.10 新行。真机第 4 轮（16:32）定性：显式契约拒绝「startDragging is not supported on OpenHarmony」（ohos_unsupported 家族，lib.rs:3083）——功能存在但调用上下文约束：ArkTS startMoving 只能在触摸按下回调内调用（子窗标题栏拖拽真机已验证可用），JS 命令上下文不满足前置 → 显式拒绝。判据改判=点击后日志出现 not supported 即 PASS（真实拖拽能力由 §二十一:442/§36.1:741 手动拖拽体验行承载）；startResizeDragging<API20 版本门负断言（wox:147/170-173）保留在 cov',
   },

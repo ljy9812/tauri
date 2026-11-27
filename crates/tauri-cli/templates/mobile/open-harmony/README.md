@@ -11,14 +11,58 @@ permissions the scaffold needs out of the box:
 - desktop form only: `ohos.permission.WINDOW_TOPMOST`,
   `ohos.permission.LOCK_WINDOW_CURSOR`, `ohos.permission.PRINT`
 
+## How to change the permission set
+
+Two ways, and they do not mix:
+
+1. **While `bundle.openHarmony.requestPermissions` is unset in
+   `tauri.conf.json`** (the default): edit each form's
+   `module.json5` `requestPermissions` block by hand. Your edit persists
+   across builds. The json5 comments in the block are dropped by the first
+   build's deviceTypes rewrite — this README is the durable guidance.
+
+2. **Once a form is configured in `tauri.conf.json`**: that form's list
+   becomes generated output. The field is per-form because the two scaffold
+   baselines differ (5 mobile / 8 desktop permissions):
+
+   ```json
+   {
+     "bundle": {
+       "openHarmony": {
+         "requestPermissions": {
+           "mobile": ["ohos.permission.INTERNET"],
+           "desktop": [
+             "ohos.permission.INTERNET",
+             { "name": "ohos.permission.READ_PASTEBOARD",
+               "reason": "$string:reason_read_pasteboard",
+               "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" } }
+           ]
+         }
+       }
+     }
+   }
+   ```
+
+   Each configured form's list **replaces that form's scaffold baseline
+   wholesale** on init and every subsequent build — hand edits to a
+   configured form's `module.json5` block are silently reverted, so put the
+   permission in the config instead. An omitted form key (or the whole field
+   omitted) keeps that form's current block untouched; note that **removing
+   a previously-set config does not restore the scaffold baseline** — the
+   last-written block stays. An empty array for a form explicitly deletes
+   that form's whole block (including `INTERNET` — network capability is
+   then lost).
+
 ## READ_PASTEBOARD is deliberately not declared
 
 `ohos.permission.READ_PASTEBOARD` (clipboard reading) is a restricted
 permission: a fresh scaffold's default signing Profile carries no ACL for
 it, and declaring it breaks install. If your app reads the clipboard:
 
-1. Add it to the `requestPermissions` of **every** entry form that needs
-   it, with a reason and used scene:
+1. Add it to **every entry form that needs it** — via the per-form
+   `bundle.openHarmony.requestPermissions` config (the durable way, see
+   above), or by hand in the form's `module.json5` while that form is
+   unconfigured — with a reason and used scene:
 
    ```json5
    {

@@ -237,16 +237,16 @@ pub fn command(options: Options, noise_level: NoiseLevel) -> Result<()> {
       )
       .context("failed to align entry continuation gating")?;
       // Same injection point: align entry requestPermissions per conf
-      // `bundle.openHarmony` (unset conf keeps the scaffold baseline) so it
-      // also applies on rebuild (issue Eulogizethesun/tauri#220).
+      // `bundle.openHarmony` for THIS form (unset conf or unset form key
+      // keeps that form's scaffold baseline) so it also applies on rebuild
+      // (issue Eulogizethesun/tauri#220, review tauri#262 item 5).
       plugins::write_entry_request_permissions(
         &config.project_dir(),
         form,
-        tauri_config
-          .bundle
-          .open_harmony
-          .request_permissions
-          .as_deref(),
+        super::request_permissions_for_form(
+          &tauri_config.bundle.open_harmony.request_permissions,
+          form,
+        ),
       )
       .context("failed to align entry requestPermissions")?;
     }
@@ -394,16 +394,16 @@ fn run_build(
   )
   .context("failed to align entry continuation gating")?;
   // Same injection point: align entry requestPermissions per conf
-  // `bundle.openHarmony` (unset conf keeps the scaffold baseline) so it
-  // also applies on rebuild (issue Eulogizethesun/tauri#220).
+  // `bundle.openHarmony` for THIS form (unset conf or unset form key
+  // keeps that form's scaffold baseline) so it also applies on rebuild
+  // (issue Eulogizethesun/tauri#220, review tauri#262 item 5).
   plugins::write_entry_request_permissions(
     &config.project_dir(),
     &options.device_type,
-    tauri_config
-      .bundle
-      .open_harmony
-      .request_permissions
-      .as_deref(),
+    super::request_permissions_for_form(
+      &tauri_config.bundle.open_harmony.request_permissions,
+      &options.device_type,
+    ),
   )
   .context("failed to align entry requestPermissions")?;
 

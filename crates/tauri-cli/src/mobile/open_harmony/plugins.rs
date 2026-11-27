@@ -692,20 +692,37 @@ pub fn write_entry_device_types(
 }
 
 /// Rewrite `entry_{form}/src/main/module.json5`'s `requestPermissions` per the
-/// conf's `bundle.openHarmony.requestPermissions`, so the configured list
-/// applies on rebuild without re-running `ohos init` (same injection point as
-/// [`write_entry_device_types`] / [`write_entry_continuation`]).
+/// conf's `bundle.openHarmony.requestPermissions` FOR THIS FORM (review
+/// tauri#262 item 5), so the configured list applies on rebuild without
+/// re-running `ohos init` (same injection point as
+/// [`write_entry_device_types`] / [`write_entry_continuation`]). The caller
+/// selects the form's list with [`super::request_permissions_for_form`] —
+/// the per-form schema replaced the old single bundle-level list, which
+/// could not express "keep the mobile baseline, replace the desktop one".
 ///
-/// The configured list **replaces the scaffold baseline wholesale** - it is
-/// the single source of truth for the whole `requestPermissions` block, so
-/// pruning the baseline means configuring the app's real permission set (issue
-/// Eulogizethesun/tauri#220). `None` (unset conf) leaves module.json5
-/// untouched, matching the `device_types` precedent for "not configured".
+/// The configured list **replaces that form's scaffold baseline wholesale** -
+/// it is the single source of truth for that form's whole
+/// `requestPermissions` block, so pruning the baseline means configuring the
+/// app's real permission set (issue Eulogizethesun/tauri#220). `None` (the
+/// field unset, or this form's key unset) leaves module.json5 untouched,
+/// matching the `device_types` precedent for "not configured". **Removing a
+/// previously-set config is a no-op, not a reset**: the last-written block
+/// stays until a new list is configured.
 ///
-/// An **empty array is a wholesale deletion too**: `requestPermissions = []`
-/// writes an empty block, wiping the scaffold baseline (INTERNET /
-/// SET_WINDOW_TRANSPARENT / PREPARE_APP_TERMINATE, plus the desktop-form
-/// extras) - network capability is silently lost. There is no "empty means
+/// The scaffold baselines the configured lists replace (form-differentiated,
+/// review tauri#262 item 5):
+/// - `entry_mobile` (5): `ohos.permission.INTERNET`,
+///   `ohos.permission.SET_WINDOW_TRANSPARENT`,
+///   `ohos.permission.PREPARE_APP_TERMINATE`,
+///   `ohos.permission.PRIVACY_WINDOW`,
+///   `ohos.permission.PUBLISH_AGENT_REMINDER`;
+/// - `entry_desktop` (8): the mobile five plus
+///   `ohos.permission.WINDOW_TOPMOST`,
+///   `ohos.permission.LOCK_WINDOW_CURSOR`, `ohos.permission.PRINT`.
+///
+/// An **empty array is a wholesale deletion too**: `requestPermissions: { "mobile": [] }`
+/// writes an empty block into `entry_mobile`, wiping its
+/// baseline (network capability silently lost) - there is no "empty means
 /// keep the baseline" special case; only unset (`None`) preserves it.
 ///
 /// These are OpenHarmony **OS** manifest permissions, orthogonal to Tauri's

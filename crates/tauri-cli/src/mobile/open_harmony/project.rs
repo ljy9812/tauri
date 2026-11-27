@@ -28,6 +28,8 @@ pub fn gen(
   skip_targets_install: bool,
   mobile_device_types: &str,
   desktop_device_types: &str,
+  mobile_request_permissions: Option<&str>,
+  desktop_request_permissions: Option<&str>,
 ) -> Result<()> {
   if !skip_targets_install {
     let installed_targets =
@@ -139,10 +141,13 @@ pub fn gen(
 
   // Render each entry module subtree with its form-specific data so hvigorfile.ts
   // bakes the right `OHOS_DEVICE_TYPE` and module.json5 gets the right deviceTypes
-  // subset (conf `deviceTypes` ∩ that form's device classes).
-  for (form, device_types) in [
-    ("mobile", mobile_device_types),
-    ("desktop", desktop_device_types),
+  // subset (conf `deviceTypes` ∩ that form's device classes). The
+  // requestPermissions pair is per-form too (review tauri#262 item 5): each
+  // form gets its own configured list, or keeps its scaffold baseline when
+  // that form is unconfigured.
+  for (form, device_types, request_permissions) in [
+    ("mobile", mobile_device_types, mobile_request_permissions),
+    ("desktop", desktop_device_types, desktop_request_permissions),
   ] {
     let module = format!("entry_{form}");
     let mut entry_data = map.inner().clone();
@@ -150,6 +155,14 @@ pub fn gen(
     entry_data.insert(
       "form-device-types".into(),
       serde_json::Value::String(device_types.into()),
+    );
+    entry_data.insert(
+      "form-request-permissions-set".into(),
+      serde_json::Value::Bool(request_permissions.is_some()),
+    );
+    entry_data.insert(
+      "form-request-permissions".into(),
+      serde_json::Value::String(request_permissions.unwrap_or_default().into()),
     );
     let entry_dir = TEMPLATE_DIR
       .get_dir(&module)
@@ -183,6 +196,8 @@ pub fn gen_with_plugins(
   plugin_metadata: Vec<PluginMeta>,
   mobile_device_types: &str,
   desktop_device_types: &str,
+  mobile_request_permissions: Option<&str>,
+  desktop_request_permissions: Option<&str>,
 ) -> Result<()> {
   if !plugin_metadata.is_empty() {
     let plugin_list: Vec<serde_json::Value> = plugin_metadata
@@ -205,6 +220,8 @@ pub fn gen_with_plugins(
     skip_targets_install,
     mobile_device_types,
     desktop_device_types,
+    mobile_request_permissions,
+    desktop_request_permissions,
   )
 }
 

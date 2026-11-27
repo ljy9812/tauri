@@ -23,11 +23,16 @@ use tauri_utils::TitleBarStyle;
 use tauri_utils::{config::WindowConfig, Theme};
 use url::Url;
 
+// `Cell` backs the `#[cfg(test)]`-gated theme-receipt thread-local; under a
+// downstream `feature = "test"` build (no `cfg(test)`) it would be unused.
+#[cfg(test)]
+use std::cell::Cell;
+
 #[cfg(windows)]
 use windows::Win32::Foundation::HWND;
 
 use std::{
-  cell::{Cell, RefCell},
+  cell::RefCell,
   collections::HashMap,
   fmt,
   sync::{
@@ -54,6 +59,14 @@ struct Window {
 
 /// How the mocked runtime behaves for the deferred theme receipt of the
 /// `set_app_theme` command (issue Eulogizethesun/tauri#264 command tests).
+///
+/// `#[cfg(test)]`-gated on purpose (review tauri#262 item 8): the only
+/// reader of this mode is the crate's own `#[cfg(test)]`
+/// `dispatch_theme_with_receipt` seam (app/plugin.rs). `tauri::test` as a
+/// whole is also compiled for downstream `feature = "test"` builds, and
+/// there these items would otherwise be exported public API that nothing
+/// reads — the mode has no effect outside the crate's own test builds.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeReceiptMode {
   /// No simulated verdict: the command dispatches to the real runtime path
@@ -78,6 +91,7 @@ pub enum ThemeReceiptMode {
   DropReceipt,
 }
 
+#[cfg(test)]
 thread_local! {
   /// Per-test-thread receipt mode; `#[tokio::test]` futures run on a single
   /// (current-thread) runtime, so each test observes its own mode without
@@ -88,11 +102,16 @@ thread_local! {
 
 /// Selects how the `set_app_theme` command's runtime dispatch behaves in the
 /// current test thread. See [`ThemeReceiptMode`].
+///
+/// Same `#[cfg(test)]` gate as [`ThemeReceiptMode`] and its reader: there is
+/// no seam outside the crate's own test builds.
+#[cfg(test)]
 pub fn set_theme_receipt_mode(mode: ThemeReceiptMode) {
   TEST_THEME_RECEIPT_MODE.with(|cell| cell.set(mode));
 }
 
 /// Reads the receipt mode selected for the current test thread.
+#[cfg(test)]
 pub fn theme_receipt_mode() -> ThemeReceiptMode {
   TEST_THEME_RECEIPT_MODE.with(|cell| cell.get())
 }

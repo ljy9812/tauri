@@ -3288,12 +3288,24 @@ pub struct OpenHarmonyConfig {
   #[serde(alias = "continue-type")]
   pub continue_type: Option<Vec<String>>,
 
-  /// The OpenHarmony `requestPermissions` list written into each entry
-  /// module.json5, **replacing the scaffold baseline wholesale** when present
-  /// (issue Eulogizethesun/tauri#220). When omitted, the scaffold baseline is
-  /// left untouched. Entries are either a bare permission name (system_grant)
-  /// or an object with `name`, `reason` and `usedScene` (user_grant); every
-  /// name must start with `ohos.permission.`.
+  /// The OpenHarmony `requestPermissions` lists written into each entry form's
+  /// module.json5, **replacing that form's scaffold baseline wholesale** when
+  /// that form is configured (issue Eulogizethesun/tauri#220, review tauri#262
+  /// item 5). Per-form because the scaffold baselines differ: `entry_mobile`
+  /// declares 5 permissions, `entry_desktop` 8 (the mobile five plus
+  /// WINDOW_TOPMOST / LOCK_WINDOW_CURSOR / PRINT) — a single bundle-level list
+  /// cannot express "keep the mobile baseline, replace the desktop one".
+  ///
+  /// When the whole field is omitted, or a form's key is omitted, that form's
+  /// scaffold baseline is left untouched. Entries are either a bare permission
+  /// name (system_grant) or an object with `name`, `reason` and `usedScene`
+  /// (user_grant); every name must start with `ohos.permission.`.
+  ///
+  /// **A removed config is a no-op, not a reset**: after configuring a form,
+  /// deleting the config does not restore the scaffold baseline on the next
+  /// build — the last-written module.json5 block stays. An empty array for a
+  /// form is an explicit wholesale deletion of that form's block (network
+  /// capability silently lost if INTERNET is dropped).
   ///
   /// ### Orthogonality
   ///
@@ -3301,27 +3313,117 @@ pub struct OpenHarmonyConfig {
   /// from Tauri's ACL/capabilities permissions, which govern IPC access to
   /// Tauri commands and plugins, not OS API access. Runtime OS-permission
   /// queries are a plugin concern (see plugins-workspace PR #15).
-  #[serde(
-    alias = "request-permissions",
-    default,
-    deserialize_with = "deserialize_ohos_request_permissions"
-  )]
-  pub request_permissions: Option<Vec<OhosRequestPermission>>,
+  #[serde(alias = "request-permissions", default)]
+  pub request_permissions: Option<OpenHarmonyRequestPermissions>,
 }
 
-/// Field-level deserializer for `bundle.openHarmony.requestPermissions`:
-/// wraps each entry's error with its list index (`requestPermissions[2]: ...`).
-/// Config parse errors carry no line/column info (the json5 error has none),
-/// so the index is the only "which entry" locator a config author gets (review
-/// tauri#262 item 5). `null` still maps to `None`, matching the derived
-/// `Option<Vec<_>>` behavior this replaces.
-fn deserialize_ohos_request_permissions<'de, D>(
-  deserializer: D,
-) -> Result<Option<Vec<OhosRequestPermission>>, D::Error>
+/// Per-form `requestPermissions` configuration (issue
+/// Eulogizethesun/tauri#220, review tauri#262 item 5): each form's list
+/// replaces that form's scaffold baseline wholesale, mirroring the per-form
+/// shape of [`OpenHarmonyDeviceTypes`] (the "deviceTypes precedent"). Unlike
+/// `deviceTypes` — where both keys are required and must be non-empty — each
+/// key here is optional: a config can replace one form's baseline and keep
+/// the other's baseline.
+///
+/// `Deserialize` is hand-written (a map visitor): the derived form cannot
+/// wrap per-entry errors with their config path
+/// (`requestPermissions.mobile[2]: ...`), and config parse errors carry no
+/// line/column info (json5), so that path is the only "which entry" locator
+/// a config author gets (review tauri#262 item 5). `null` never reaches this
+/// impl — the `Option` at the field site maps it to `None`.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[skip_serializing_none]
+pub struct OpenHarmonyRequestPermissions {
+  /// The list written into `entry_mobile`'s module.json5, replacing the
+  /// mobile scaffold baseline (5 permissions) wholesale. `None` leaves that
+  /// baseline untouched.
+  pub mobile: Option<Vec<OhosRequestPermission>>,
+  /// The list written into `entry_desktop`'s module.json5, replacing the
+  /// desktop scaffold baseline (8 permissions) wholesale. `None` leaves that
+  /// baseline untouched.
+  pub desktop: Option<Vec<OhosRequestPermission>>,
+}
+
+impl<'de> Deserialize<'de> for OpenHarmonyRequestPermissions {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    struct OhosRequestPermissionsVisitor;
+
+    impl<'de> Visitor<'de> for OhosRequestPermissionsVisitor {
+      type Value = OpenHarmonyRequestPermissions;
+
+      fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+          .write_str("an object with optional `mobile` and `desktop` requestPermissions arrays")
+      }
+
+      fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+      where
+        A: serde::de::MapAccess<'de>,
+      {
+        let mut mobile: Option<Option<Vec<OhosRequestPermission>>> = None;
+        let mut desktop: Option<Option<Vec<OhosRequestPermission>>> = None;
+        while let Some(key) = map.next_key::<String>()? {
+          match key.as_str() {
+            "mobile" => {
+              if mobile.is_some() {
+                return Err(DeError::custom(
+                  "requestPermissions: duplicate `mobile` key",
+                ));
+              }
+              mobile = Some(deserialize_request_permission_list(
+                "mobile",
+                map.next_value()?,
+              )?);
+            }
+            "desktop" => {
+              if desktop.is_some() {
+                return Err(DeError::custom(
+                  "requestPermissions: duplicate `desktop` key",
+                ));
+              }
+              desktop = Some(deserialize_request_permission_list(
+                "desktop",
+                map.next_value()?,
+              )?);
+            }
+            other => {
+              return Err(DeError::custom(format_args!(
+                "requestPermissions: unknown field `{other}`, expected `mobile` and/or `desktop` (per-form lists; a bare array is not accepted — pick the form(s) it applies to)"
+              )))
+            }
+          }
+        }
+        if mobile.is_none() && desktop.is_none() {
+          return Err(DeError::custom(
+            "requestPermissions: the object configures neither `mobile` nor `desktop` — \
+             that is a no-op; configure at least one form or remove the field",
+          ));
+        }
+        Ok(OpenHarmonyRequestPermissions {
+          mobile: mobile.flatten(),
+          desktop: desktop.flatten(),
+        })
+      }
+    }
+
+    deserializer.deserialize_map(OhosRequestPermissionsVisitor)
+  }
+}
+
+/// One form's `requestPermissions` array: `null` maps to `None` (that form is
+/// not configured), otherwise every entry is deserialized and its error is
+/// wrapped with the config path (`requestPermissions.mobile[2]: ...`).
+fn deserialize_request_permission_list<'de, E>(
+  form: &str,
+  raw: Option<Vec<JsonValue>>,
+) -> Result<Option<Vec<OhosRequestPermission>>, E>
 where
-  D: Deserializer<'de>,
+  E: DeError,
 {
-  let raw = Option::<Vec<JsonValue>>::deserialize(deserializer)?;
   let Some(raw) = raw else {
     return Ok(None);
   };
@@ -3329,7 +3431,7 @@ where
   for (index, value) in raw.into_iter().enumerate() {
     list.push(
       OhosRequestPermission::deserialize(&value)
-        .map_err(|error| DeError::custom(format_args!("requestPermissions[{index}]: {error}")))?,
+        .map_err(|error| E::custom(format_args!("requestPermissions.{form}[{index}]: {error}")))?,
     );
   }
   Ok(Some(list))
@@ -4951,20 +5053,26 @@ mod test {
 
     let conf: OpenHarmonyConfig = serde_json::from_str(
       r#"{
-        "requestPermissions": [
-          "ohos.permission.INTERNET",
-          {
-            "name": "ohos.permission.READ_PASTEBOARD",
-            "reason": "$string:reason_clipboard",
-            "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
-          }
-        ]
+        "requestPermissions": {
+          "mobile": [
+            "ohos.permission.INTERNET",
+            {
+              "name": "ohos.permission.READ_PASTEBOARD",
+              "reason": "$string:reason_clipboard",
+              "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
+            }
+          ],
+          "desktop": ["ohos.permission.INTERNET"]
+        }
       }"#,
     )
     .unwrap();
-    let list = conf.request_permissions.expect("configured list");
-    assert_eq!(list[0], P::Name("ohos.permission.INTERNET".into()));
-    match &list[1] {
+    let per_form = conf.request_permissions.expect("configured object");
+    // Per-form lists: each form gets its own list, and the other form may
+    // stay unconfigured (review tauri#262 item 5).
+    let mobile = per_form.mobile.as_deref().unwrap();
+    assert_eq!(mobile[0], P::Name("ohos.permission.INTERNET".into()));
+    match &mobile[1] {
       P::Detailed(d) => {
         assert_eq!(d.name, "ohos.permission.READ_PASTEBOARD");
         assert_eq!(d.reason, "$string:reason_clipboard");
@@ -4973,22 +5081,42 @@ mod test {
       }
       other => panic!("expected the detailed form, got {other:?}"),
     }
+    assert_eq!(
+      per_form.desktop,
+      Some(vec![P::Name("ohos.permission.INTERNET".into())])
+    );
 
     // kebab-case alias and name() accessor work for both forms
-    let aliased: OpenHarmonyConfig =
-      serde_json::from_str(r#"{"request-permissions": ["ohos.permission.INTERNET"]}"#).unwrap();
+    let aliased: OpenHarmonyConfig = serde_json::from_str(
+      r#"{"request-permissions": { "mobile": ["ohos.permission.INTERNET"] }}"#,
+    )
+    .unwrap();
     assert_eq!(
-      aliased.request_permissions,
+      aliased.request_permissions.clone().unwrap().mobile,
       Some(vec![P::Name("ohos.permission.INTERNET".into())])
     );
     assert_eq!(
-      aliased.request_permissions.as_deref().unwrap()[0].name(),
+      aliased
+        .request_permissions
+        .unwrap()
+        .mobile
+        .as_deref()
+        .unwrap()[0]
+        .name(),
       "ohos.permission.INTERNET"
     );
 
     // serializing round-trips the object form with OS field names
-    let serialized = serde_json::to_string(&list).unwrap();
+    let serialized = serde_json::to_string(&mobile).unwrap();
     assert!(serialized.contains(r#""usedScene":{"abilities":["EntryAbility"],"when":"inuse"}"#));
+
+    // A single-form object is valid: mobile configured, desktop keeps its
+    // scaffold baseline.
+    let conf: OpenHarmonyConfig =
+      serde_json::from_str(r#"{ "requestPermissions": { "desktop": [] } }"#).unwrap();
+    let per_form = conf.request_permissions.unwrap();
+    assert_eq!(per_form.mobile, None, "unconfigured form must be None");
+    assert_eq!(per_form.desktop, Some(Vec::new()));
   }
 
   #[test]
@@ -5012,23 +5140,25 @@ mod test {
   #[test]
   fn open_harmony_request_permissions_error_names_entry_and_field() {
     // Object form missing `reason`: json5/serde parse errors carry no line
-    // numbers, so the error must locate the entry (index) and the missing
-    // field itself instead of the opaque untagged-enum message (review
-    // tauri#262 item 5).
+    // numbers, so the error must locate the form, the entry (index) and the
+    // missing field itself instead of the opaque untagged-enum message
+    // (review tauri#262 item 5).
     let err = serde_json::from_str::<OpenHarmonyConfig>(
       r#"{
-        "requestPermissions": [
-          "ohos.permission.INTERNET",
-          { "name": "ohos.permission.READ_PASTEBOARD",
-            "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" } }
-        ]
+        "requestPermissions": {
+          "mobile": [
+            "ohos.permission.INTERNET",
+            { "name": "ohos.permission.READ_PASTEBOARD",
+              "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" } }
+          ]
+        }
       }"#,
     )
     .unwrap_err()
     .to_string();
     assert!(
-      err.contains("requestPermissions[1]"),
-      "error must name the entry index: {err}"
+      err.contains("requestPermissions.mobile[1]"),
+      "error must name the form and entry index: {err}"
     );
     assert!(
       err.contains("reason"),
@@ -5038,11 +5168,13 @@ mod test {
     // A misspelled field is named too (deny_unknown_fields on the object form).
     let err = serde_json::from_str::<OpenHarmonyConfig>(
       r#"{
-        "requestPermissions": [
-          { "name": "ohos.permission.X", "reason": "$string:r",
-            "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" },
-            "usedScenne": { "abilities": [], "when": "inuse" } }
-        ]
+        "requestPermissions": {
+          "mobile": [
+            { "name": "ohos.permission.X", "reason": "$string:r",
+              "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" },
+              "usedScenne": { "abilities": [], "when": "inuse" } }
+          ]
+        }
       }"#,
     )
     .unwrap_err()
@@ -5054,16 +5186,59 @@ mod test {
 
     // A wrong-shaped entry (neither string nor object) states both accepted
     // shapes instead of the untagged collapse.
-    let err = serde_json::from_str::<OpenHarmonyConfig>(r#"{ "requestPermissions": [42] }"#)
-      .unwrap_err()
-      .to_string();
+    let err =
+      serde_json::from_str::<OpenHarmonyConfig>(r#"{ "requestPermissions": { "desktop": [42] } }"#)
+        .unwrap_err()
+        .to_string();
     assert!(
-      err.contains("requestPermissions[0]"),
-      "error must name the entry index: {err}"
+      err.contains("requestPermissions.desktop[0]"),
+      "error must name the form and entry index: {err}"
     );
     assert!(
       err.contains("permission name string"),
       "error must state the accepted shapes: {err}"
+    );
+  }
+
+  #[test]
+  fn open_harmony_request_permissions_rejects_unknown_and_empty_forms() {
+    // Unknown per-form key: the error names it and states the per-form shape
+    // (review tauri#262 item 5 — the old single list cannot express the two
+    // different scaffold baselines).
+    let err = serde_json::from_str::<OpenHarmonyConfig>(
+      r#"{ "requestPermissions": { "phone": ["ohos.permission.INTERNET"] } }"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+      err.contains("phone"),
+      "error must name the unknown form key: {err}"
+    );
+    assert!(
+      err.contains("mobile"),
+      "error must state the accepted form keys: {err}"
+    );
+
+    // A bare array is not the config shape anymore: the error must say the
+    // per-form object is required, not collapse into an opaque type error.
+    let err = serde_json::from_str::<OpenHarmonyConfig>(
+      r#"{ "requestPermissions": ["ohos.permission.INTERNET"] }"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+      err.contains("mobile"),
+      "a bare array must error with the per-form guidance: {err}"
+    );
+
+    // An object with neither form configured is a no-op: rejected instead of
+    // silently doing nothing.
+    let err = serde_json::from_str::<OpenHarmonyConfig>(r#"{ "requestPermissions": {} }"#)
+      .unwrap_err()
+      .to_string();
+    assert!(
+      err.contains("neither"),
+      "the both-forms-absent object must be rejected: {err}"
     );
   }
 }

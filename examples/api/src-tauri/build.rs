@@ -76,6 +76,11 @@ fn main() {
         // polled from the main window.
         "track_webview_viewport_probe",
         "get_tracked_webview_viewport_probes",
+        // Storage-isolation probe pair (S1-002 read-back, review tauri#262
+        // item 12): invoked from the isolated window's probe page and polled
+        // from the main window — same shape as the viewport pair above.
+        "track_storage_isolation_probe",
+        "get_tracked_storage_isolation_reports",
         "emit_test_event",
         "setup_app_listener",
         "test_async_spawn",

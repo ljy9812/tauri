@@ -213,9 +213,17 @@ async function defaultWindowIcon(): Promise<Image | null> {
  * #### Platform-specific
  *
  * - **iOS / Android:** Unsupported.
- * - **OHOS:** the system color mode change is applied on a deferred ArkTS
- *   tick. When that tick reports a failure, the promise rejects with an
- *   error and the theme override is rolled back to follow the system theme.
+ * - **OHOS:** the theme override is applied through
+ *   `ApplicationContext.setColorMode` (an app-level override, not the
+ *   system-wide color mode) on a deferred ArkTS tick. When that tick
+ *   reports a failure, the promise rejects with an error and the override
+ *   is rolled back to follow the system theme. The failure → reject
+ *   promise holds only when the verdict arrives within the command-side
+ *   timeout: on a stale bridge (no deferred tick ever runs, e.g. early
+ *   startup before the loop is up) the call resolves successfully after
+ *   the timeout instead, and a receipt whose verdict arrives late can
+ *   mis-pair with a subsequent call (arrival-order pairing; see issue
+ *   #264).
  *
  * @since 2.0.0
  */

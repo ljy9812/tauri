@@ -368,15 +368,21 @@ pub trait RuntimeHandle<T: UserEvent>: Debug + Clone + Send + Sync + Sized + 'st
   /// Sets the app theme and hands the runtime a receipt closure that reports
   /// whether the change actually applied.
   ///
-  /// The receipt is fired exactly once with the verdict of the theme change:
+  /// The receipt is fired at most once with the verdict of the theme change:
   /// `true` applied, `false` failed (the theme override has already been
   /// rolled back to follow the system theme by the time the receipt fires).
+  /// A dispatch failure or a closing event loop can drop the receipt without
+  /// firing it, in which case the awaiting command side falls back to its
+  /// timeout arm.
   ///
-  /// Runtimes without a deferred completion mechanism apply the theme
-  /// synchronously, so the default implementation forwards to
-  /// [`RuntimeHandle::set_theme`] and fires the receipt with `true` right
-  /// away — fire-and-forget semantics, matching the previous behavior of the
-  /// JS `setTheme` caller on those platforms.
+  /// The default implementation forwards to [`RuntimeHandle::set_theme`] and
+  /// fires the receipt with `true` right away. `true` there only means the
+  /// theme change was ACCEPTED by the runtime: on runtimes whose
+  /// [`RuntimeHandle::set_theme`] merely enqueues a message (wry on the
+  /// desktop is fire-and-forget through the event loop), the change has not
+  /// necessarily been applied yet when the receipt fires — fire-and-forget
+  /// semantics, matching the previous behavior of the JS `setTheme` caller
+  /// on those platforms.
   ///
   /// The closure MUST swallow its own send failure: the awaiting command side
   /// times out and drops its receiver, which is a normal, non-fatal outcome.

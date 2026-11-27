@@ -1,4 +1,4 @@
-import { skip, skipOnMobile, ohosSdkApiVersion, type TestCase } from '../test-runner';
+import { skip, skipOnMobile, skipUnlessOhos, isOhos, ohosSdkApiVersion, type TestCase } from '../test-runner';
 import { invoke, Channel, Resource } from '@tauri-apps/api/core';
 import { emit, listen, once, emitTo } from '@tauri-apps/api/event';
 import { getVersion, getName, getTauriVersion, getIdentifier, getBundleType, defaultWindowIcon, supportsMultipleWindows, setDockVisibility, hide as appHide, show as appShow } from '@tauri-apps/api/app';
@@ -384,22 +384,28 @@ function waitForWebviewCreated(child: Webview, what: string): Promise<void> {
 }
 
 export const coreTests: TestCase[] = [
-  // OHOS version info (prints to console on OHOS, skipped on other platforms)
+  // OHOS version info (asserts on OHOS; the command-missing case on other
+  // builds is an honest skip — review tauri#262 item 12: the old empty catch
+  // swallowed assertion failures together with command-missing errors, so a
+  // wrong version silently passed)
   {
     name: '@tauri-apps/ohos.versionInfo',
     category: 'auto',
     async fn() {
+      let info: { sdkApiVersion: number; distributionApiVersion: number };
       try {
-        const info = await invoke<{
+        info = await invoke<{
           sdkApiVersion: number;
           distributionApiVersion: number;
         }>('get_ohos_version_info');
-        console.log(`[OHOS Version] sdk_api=${info.sdkApiVersion}, distribution_api=${info.distributionApiVersion}`);
-        assert(info.sdkApiVersion >= 12, `sdkApiVersion should be >= 12, got ${info.sdkApiVersion}`);
-        assert(info.distributionApiVersion > 0, `distributionApiVersion should be > 0, got ${info.distributionApiVersion}`);
-      } catch {
-        // Not on OHOS — command doesn't exist, skip silently
+      } catch (e) {
+        // The command only exists in OHOS builds — on anything else skip
+        // with the reason, never a silent pass.
+        skip(`get_ohos_version_info unavailable (non-OHOS build?): ${String(e)}`);
       }
+      console.log(`[OHOS Version] sdk_api=${info.sdkApiVersion}, distribution_api=${info.distributionApiVersion}`);
+      assert(info.sdkApiVersion >= 12, `sdkApiVersion should be >= 12, got ${info.sdkApiVersion}`);
+      assert(info.distributionApiVersion > 0, `distributionApiVersion should be > 0, got ${info.distributionApiVersion}`);
     },
   },
 
@@ -487,6 +493,9 @@ export const coreTests: TestCase[] = [
       // S3-011：应用级 app_hide/app_show 被 cfg(target_os = "macos") 门住
       // （plugin.rs:41-47），非 macOS 一律 no-op 返回 Ok。断言=干净 resolve +
       // 主窗可见性不翻（no-op 实证）。窗口级 hide 的 #237 契约拒绝是另一路径。
+      // macOS 是该契约的例外（review tauri#262 item 18）：appHide 真隐藏全部
+      // 窗口，中态探针在 macOS 上必红——中态断言仅非 macOS 生效。
+      const isMac = navigator.userAgent.includes('Macintosh');
       const before = await getCurrentWindow().isVisible();
       await appHide();
       // R4 #25 中态探针：appHide/appShow 之间窗必须仍可见——只看 before/after
@@ -498,8 +507,10 @@ export const coreTests: TestCase[] = [
       await appShow();
       const after = await getCurrentWindow().isVisible();
       assert(before === true, `main window should be visible before, got ${before}`);
-      assert(mid === true, `main window must stay visible between appHide and appShow (non-macOS no-op contract), got ${mid}`);
-      assert(after === true, `main window should stay visible (non-macOS no-op contract), got ${after}`);
+      if (!isMac) {
+        assert(mid === true, `main window must stay visible between appHide and appShow (non-macOS no-op contract), got ${mid}`);
+      }
+      assert(after === true, `main window should stay visible after appShow (non-macOS no-op contract / macOS restore), got ${after}`);
     },
   },
   {
@@ -858,11 +869,50 @@ export const coreTests: TestCase[] = [
     },
   },
   {
+    name: 'main window setFullscreen mirror readout (element-fullscreen chain risk#1: isFullscreen after ENTER_IMMERSIVE maximize)',
+    category: 'fsprobe',
+    timeout: 20000,
+    async fn() {
+      await skipOnMobile('the desktop setFullscreen path is maximize(ENTER_IMMERSIVE) + title-bar/Dock hover hiding, a 2in1 desktop form');
+      // Arbitration probe for the automatic element-fullscreen chain (tauri#262
+      // follow-up): tao's set_fullscreen(Some) seeds mirror.fullscreen=true
+      // synchronously (tao window.rs set_fullscreen), then the OS
+      // windowStatusChange backfill (apply_window_status) corrects the bits.
+      // Docs (OS API-behavior changes) say that from API 14
+      // maximize(ENTER_IMMERSIVE) reports MAXIMIZE(2), whose backfill branch
+      // clears the fullscreen bit — so the readout may say "not fullscreen"
+      // while the window IS visually immersive. This probe reads the mirror
+      // on device and records the verdict via console (hilog) evidence; the
+      // asserted contract is only the exit-path consistency. fsOn=true →
+      // readout correct (FULL_SCREEN reported or no backfill); fsOn=false
+      // with maxOn=true → MAXIMIZE(2) backfill cleared it (risk confirmed).
+      const win = getCurrentWindow();
+      await win.setFullscreen(true);
+      const fsImmediate = await win.isFullscreen();
+      await new Promise((r) => setTimeout(r, 1500));
+      const fsOn = await win.isFullscreen();
+      const maxOn = await win.isMaximized();
+      console.log(`[fsprobe] enter immediate: isFullscreen=${fsImmediate}`);
+      console.log(`[fsprobe] enter settled (1.5s): isFullscreen=${fsOn} isMaximized=${maxOn}`);
+      await win.setFullscreen(false);
+      await new Promise((r) => setTimeout(r, 1500));
+      const fsOff = await win.isFullscreen();
+      const maxOff = await win.isMaximized();
+      console.log(`[fsprobe] exit settled (1.5s): isFullscreen=${fsOff} isMaximized=${maxOff}`);
+      assert(fsOff === false, `isFullscreen after setFullscreen(false) should settle to false, got ${fsOff}`);
+      assert(maxOff === false, `isMaximized after setFullscreen(false) should settle to false, got ${maxOff}`);
+    },
+  },
+  {
     name: 'float sub-window setEnabled (OHOS rejection contract)',
     category: 'side-effect',
     timeout: 8000,
     async fn() {
       await skipOnMobile('the create_borderless_window command is cfg(desktop)-only in cmd.rs');
+      // OHOS-only contract (review tauri#262 item 18): on desktop platforms
+      // setEnabled succeeds — skip there so this case cannot go red outside
+      // OHOS.
+      await skipUnlessOhos('setEnabled rejects only on OHOS (#225); desktop platforms implement it for real');
       // S1-067「切换启用状态」：OHOS 契约=setEnabled 显式拒绝（#225：dispatcher
       // 提前报错而非静默 no-op）；isEnabled 恒 true（window/mod.rs:40 无系统态可查）。
       // 用子窗不用主窗——万一拒绝未发生也不锁死整个 UI。
@@ -1051,7 +1101,16 @@ export const coreTests: TestCase[] = [
     name: '@tauri-apps/api/path.isAbsolute',
     category: 'auto',
     async fn() {
-      assert((await isAbsolute('/a')) === true, 'isAbsolute(/a) should be true');
+      // Path semantics are platform-conditional (review tauri#262 item 18):
+      // a leading slash is absolute on OHOS/Unix, but NOT on Windows (no
+      // drive letter). Derive the expectation from the platform instead of
+      // hard-coding the POSIX form.
+      const isWindows = navigator.userAgent.includes('Windows');
+      const slashAbsolute = await isAbsolute('/a');
+      assert(
+        slashAbsolute === !isWindows,
+        `isAbsolute('/a') should be ${!isWindows} on ${isWindows ? 'Windows' : 'POSIX-like platforms (incl. OHOS)'}, got ${slashAbsolute}`
+      );
       assert((await isAbsolute('a')) === false, 'isAbsolute(a) should be false');
     },
   },
@@ -1059,8 +1118,11 @@ export const coreTests: TestCase[] = [
     name: '@tauri-apps/api/path.normalize',
     category: 'auto',
     async fn() {
+      // Platform-conditional expectation (review tauri#262 item 18): Rust's
+      // normalize keeps the platform separator — backslashes on Windows.
+      const expected = navigator.userAgent.includes('Windows') ? '\\a\\c' : '/a/c';
       const n = await normalize('/a/./b/../c');
-      assert(n === '/a/c', `normalize should be /a/c, got ${n}`);
+      assert(n === expected, `normalize should be ${expected} (platform separator), got ${n}`);
     },
   },
   {
@@ -1081,9 +1143,12 @@ export const coreTests: TestCase[] = [
     async fn() {
       const dir = await appConfigDir();
       await assertDirPath(dir, 'files', 'appConfigDir');
-      // OHOS 同映射交叉：appConfigDir 与 appLocalDataDir 都指向 …/files（模块级 el2 形态）
-      const sibling = await appLocalDataDir();
-      assert(dir === sibling, `appConfigDir should equal appLocalDataDir on OHOS, got "${dir}" vs "${sibling}"`);
+      // OHOS 同映射交叉：appConfigDir 与 appLocalDataDir 都指向 …/files（模块级 el2 形态）。
+      // 交叉腿仅 OHOS 成立（review tauri#262 item 18）——桌面平台两目录本就分立。
+      if (await isOhos()) {
+        const sibling = await appLocalDataDir();
+        assert(dir === sibling, `appConfigDir should equal appLocalDataDir on OHOS, got "${dir}" vs "${sibling}"`);
+      }
     },
   },
   {
@@ -1116,9 +1181,12 @@ export const coreTests: TestCase[] = [
     async fn() {
       const dir = await configDir();
       await assertDirPath(dir, 'files', 'configDir');
-      // OHOS 同映射交叉：configDir 与 dataDir 都指向 …/files（模块级 el2 形态）
-      const sibling = await dataDir();
-      assert(dir === sibling, `configDir should equal dataDir on OHOS, got "${dir}" vs "${sibling}"`);
+      // OHOS 同映射交叉：configDir 与 dataDir 都指向 …/files（模块级 el2 形态）。
+      // 交叉腿仅 OHOS 成立（review tauri#262 item 18）——桌面平台两目录本就分立。
+      if (await isOhos()) {
+        const sibling = await dataDir();
+        assert(dir === sibling, `configDir should equal dataDir on OHOS, got "${dir}" vs "${sibling}"`);
+      }
     },
   },
   {
@@ -1165,6 +1233,10 @@ export const coreTests: TestCase[] = [
     name: '@tauri-apps/api/path.runtimeDir (OHOS defined-absent, android-aligned)',
     category: 'auto',
     async fn() {
+      // OHOS-only contract (review tauri#262 item 18): BaseDirectory::Runtime
+      // exists on desktop platforms — runtimeDir() resolves there, so this
+      // case must not run outside OHOS.
+      await skipUnlessOhos('runtimeDir is defined-absent only on OHOS (android-aligned); desktop platforms resolve it');
       // S3-060：BaseDirectory::Runtime 在 Rust 侧被 cfg(not(android),
       // not(ohos)) 摘除（path/mod.rs:175，与上游 Android 同款定义性缺席）——
       // JS 层 invoke 目录号 22 无法反序列化，必然拒绝。断言=干净拒绝（拿到
@@ -1948,6 +2020,7 @@ export const coreTests: TestCase[] = [
   {
     name: 'window-state save_window_state + restore_state round-trip (all flags)',
     category: 'auto',
+    timeout: 15000,
     async fn() {
       // Auto (promoted from manual 2026-08-26): full-flags round-trip is the
       // p3-restore-state-lock-hygiene regression guard — POSITION flag drives
@@ -1956,12 +2029,31 @@ export const coreTests: TestCase[] = [
       // plugins-workspace/plugins/window-state/src/lib.rs. The previous test
       // passed no flags (SIZE only) and left that path as a coverage blind
       // spot. Verified on device: no appfreeze, position restored.
+      // Read-back assertion added per review tauri#262 item 12: the old body
+      // ended with "No assertion" — a deadlock was only caught by the outer
+      // timeout and a no-op restore passed silently. Now the pre-save size
+      // must still read back after restore (within a poll window, restore
+      // applies asynchronously on OHOS).
       const win = getCurrentWindow();
+      const before = await win.innerSize();
       // Save current state
       await invoke('plugin:window-state|save_window_state', { label: win.label });
       // Restore with all flags (63 = SIZE|POSITION|MAXIMIZED|VISIBLE|DECORATIONS|FULLSCREEN)
       await invoke('plugin:window-state|restore_state', { label: win.label, flags: 63 });
-      // No assertion — verifying no error thrown and no deadlock/appfreeze is the pass criteria
+      const deadline = Date.now() + 5000;
+      let after = await win.innerSize();
+      while (
+        Date.now() < deadline &&
+        !(Math.abs(after.width - before.width) <= 2 && Math.abs(after.height - before.height) <= 2)
+      ) {
+        await new Promise((r) => setTimeout(r, 100));
+        after = await win.innerSize();
+      }
+      assert(
+        Math.abs(after.width - before.width) <= 2 && Math.abs(after.height - before.height) <= 2,
+        `restore_state(63) should re-apply the saved size ${before.width}x${before.height}, got ${after.width}x${after.height}`
+      );
+      assert(after.width > 0 && after.height > 0, `innerSize should stay positive after restore, got ${after.width}x${after.height}`);
     },
   },
 
@@ -2819,6 +2911,141 @@ export const coreTests: TestCase[] = [
     },
   },
 
+  // ─── S1-002 isolation read-back (review tauri#262 item 12) ───
+  // create_isolated_window computes a distinct data_directory per webview
+  // (webview_data_<suffix>_<seq>, cmd.rs). What that actually BUYS differs by
+  // backend, and the read-back asserts the real contract, not an assumed one
+  // (device-observed 2026-11-27; original version asserted full isolation and
+  // went red on OHOS):
+  //   - Windows (WebView2) / Linux (webkitgtk): the per-data_directory
+  //     WebContext is consumed by the backend → genuinely separate storage.
+  //   - macOS (WKWebView) and OHOS (ArkWeb): no per-webview data path exists —
+  //     wry stores the directory but the backend never reads it; ArkWeb keeps
+  //     ONE WebStorage shared by every Web component in the app, keyed by
+  //     origin. Documented no-op (tauri-ohos-api-support.md `with_web_context`
+  //     row; wry points macOS users at incognito/scheme separation as the
+  //     replacement).
+  //   - The real isolation lever on no-op platforms is ORIGIN separation:
+  //     useHttpsScheme puts the webview on https://tauri.localhost while the
+  //     main window runs http://tauri.localhost — different origin → separate
+  //     localStorage. (The http↔https duality only exists on the OHOS and
+  //     Windows backends; macOS/Linux custom protocols are always
+  //     `<scheme>://` form, so the flag is inert there and the leg is skipped.)
+  // Probe pages report their OWN localStorage view through the real
+  // `window.__TAURI_INTERNALS__.invoke` channel (on OHOS this is the
+  // per-webview `window.ipc` proxy — origin-independent).
+  {
+    name: 'webview data_directory storage isolation (isolated window read-back)',
+    category: 'auto',
+    timeout: 25000,
+    async fn() {
+      const KEY_SHARED = 'sow-iso-shared';
+      const KEY_SELF = 'sow-iso-self';
+      // Control: the main window's own store holds the marker.
+      localStorage.setItem(KEY_SHARED, 'main-write');
+      assert(localStorage.getItem(KEY_SHARED) === 'main-write', 'main window localStorage control write failed');
+      localStorage.removeItem(KEY_SELF);
+
+      const ohos = await isOhos();
+      const mac = /Macintosh/.test(navigator.userAgent);
+      const windows = /Windows/.test(navigator.userAgent);
+      // data_directory is stored but never consumed by the WKWebView/ArkWeb
+      // backends — same-origin isolated windows share the main store there.
+      const dataDirIsNoOp = ohos || mac;
+      // Only the OHOS/Windows backends read use_https_scheme (http↔https
+      // duality); elsewhere the flag is inert so the leg has no meaning.
+      const httpsSchemeAvailable = ohos || windows;
+
+      await invoke('clear_tracked_events');
+      const labels: string[] = [];
+      let httpsLabel: string | null = null;
+      try {
+        // Leg 1 — same-scheme isolated window with its own data_directory.
+        const plainLabel = await invoke<string>('create_isolated_window', {
+          windowId: 'test-iso-readback-plain',
+          dataSuffix: 'isoPlain',
+          url: '/storage-isolation-probe.html',
+        });
+        labels.push(plainLabel);
+        // Leg 2 — https-scheme isolated window: cross-origin from the main
+        // window, the real isolation lever on no-op platforms.
+        if (httpsSchemeAvailable) {
+          httpsLabel = await invoke<string>('create_isolated_window', {
+            windowId: 'test-iso-readback-https',
+            dataSuffix: 'isoHttps',
+            url: '/storage-isolation-probe.html',
+            useHttps: true,
+          });
+          labels.push(httpsLabel);
+        }
+        // Poll until every created label has reported (reports fire at eval + load).
+        const deadline = Date.now() + 12000;
+        let reports: { tag: string; sharedSeen: string | null; selfWriteOk: boolean }[] = [];
+        while (Date.now() < deadline) {
+          reports = await invoke<
+            { tag: string; sharedSeen: string | null; selfWriteOk: boolean }[]
+          >('get_tracked_storage_isolation_reports');
+          if (labels.every((l) => reports.some((r) => r.tag === l))) break;
+          await new Promise((r) => setTimeout(r, 150));
+        }
+        const latestFor = (label: string) =>
+          reports.filter((r) => r.tag === label).pop();
+        const plain = latestFor(plainLabel);
+        assert(!!plain, `storage-isolation probe for "${plainLabel}" never reported within 12000ms (page not loaded or uplink broken)`);
+        // Leg 1: what data_directory actually buys on THIS backend.
+        if (dataDirIsNoOp) {
+          assert(
+            plain.sharedSeen === 'main-write',
+            `data_directory no-op read-back: same-origin isolated webview "${plainLabel}" must still see the main store on this backend (documented no-op), shared=${JSON.stringify(plain.sharedSeen)}`
+          );
+        } else {
+          assert(
+            plain.sharedSeen === null,
+            `isolated webview "${plainLabel}" must NOT see the main window's localStorage (data_directory isolation broken): shared=${JSON.stringify(plain.sharedSeen)}`
+          );
+        }
+        assert(plain.selfWriteOk === true, `isolated webview "${plainLabel}" own store write→read roundtrip failed`);
+        // Leg 2: origin separation must isolate wherever the leg is meaningful.
+        if (httpsLabel !== null) {
+          const https = latestFor(httpsLabel);
+          assert(!!https, `storage-isolation probe for "${httpsLabel}" never reported within 12000ms (page not loaded or uplink broken)`);
+          assert(
+            https.sharedSeen === null,
+            `https-scheme isolated webview "${httpsLabel}" (cross-origin) must NOT see the main window's localStorage: shared=${JSON.stringify(https.sharedSeen)}`
+          );
+          assert(https.selfWriteOk === true, `https-scheme isolated webview "${httpsLabel}" own store write→read roundtrip failed`);
+        }
+        // Reverse direction: the main window's marker survives every child.
+        assert(localStorage.getItem(KEY_SHARED) === 'main-write', 'main window shared marker was overwritten by an isolated webview');
+        // On no-op backends the same-scheme window's own-store write lands in
+        // the SHARED (== main) store — the no-op consequence, read back in the
+        // write direction. On isolating backends nothing may leak in.
+        const leaked = localStorage.getItem(KEY_SELF);
+        if (dataDirIsNoOp) {
+          assert(
+            leaked === plainLabel,
+            `data_directory no-op read-back (write direction): same-scheme window's write should be visible in the shared main store as its own tag, got ${JSON.stringify(leaked)}`
+          );
+        } else {
+          assert(
+            leaked === null,
+            `children's "${KEY_SELF}" write leaked into the main window store: ${JSON.stringify(leaked)}`
+          );
+        }
+      } finally {
+        // best-effort cleanup of the isolated windows and the markers
+        for (const label of labels) {
+          try {
+            const w = await WebviewWindow.getByLabel(label);
+            if (w) await w.close();
+          } catch { /* best-effort */ }
+        }
+        localStorage.removeItem(KEY_SHARED);
+        localStorage.removeItem(KEY_SELF);
+      }
+    },
+  },
+
   // ─── Mouse Event Tests (OHOS desktop / 2in1) ───
   {
     name: 'DOM MouseEvent.dispatch (synthetic)',
@@ -3227,7 +3454,7 @@ export const coreTests: TestCase[] = [
   // the 2nd run-all within the same app session, so build() returns the stale
   // window and no new blur window appears visually.
   {
-    name: 'window.setEffects (Blur/Acrylic) — no throw',
+    name: 'window.setEffects (Blur/Acrylic) — negative control + live cycle',
     category: 'side-effect',
     async fn() {
       await skipOnMobile('the setEffects window command is upstream cfg(desktop) and absent from the mobile build');
@@ -3235,10 +3462,26 @@ export const coreTests: TestCase[] = [
       await invoke('create_transparent_window', { windowId });
       const win = await WebviewWindow.getByLabel(windowId);
       if (!win) throw new Error('vibrancy window not created');
+      // Negative control (review tauri#262 item 12): an unknown effect name
+      // must REJECT at the IPC deserialization boundary — proving the command
+      // validates its input instead of swallowing everything. Without this
+      // arm, a silently no-op'ing setEffects still looked green via a
+      // tautological assert(true).
+      let rejected = false;
+      try {
+        await win.setEffects({ effects: ['zz-unknown-effect' as unknown as Effect] });
+      } catch {
+        rejected = true;
+      }
+      assert(rejected, 'setEffects with an unknown effect name should reject at the deserialization boundary — a resolve means the input is not validated');
       await win.setEffects({ effects: [Effect.Blur], radius: 25 });
       await win.setEffects({ effects: [Effect.Acrylic], radius: 25, color: [0, 0, 0, 128] });
       await win.clearEffects();
-      assert(true, 'setEffects + clearEffects did not throw for all effect types');
+      // Positive arm: the window object is still live and answering reads
+      // after the full effect cycle (replaces the old assert(true), which
+      // could never fail).
+      const size = await win.innerSize();
+      assert(size.width > 0 && size.height > 0, `window should still resolve innerSize after the effect cycle, got ${size.width}x${size.height}`);
       // Intentionally NOT closing — leave for manual Close All cleanup.
     },
   },
@@ -3282,17 +3525,27 @@ export const coreTests: TestCase[] = [
   },
   // ── Vibrancy build-time effects (WindowBuilder::effects, distinct from runtime setEffects) ──
   {
-    name: 'vibrancy build-time effects (WindowBuilder::effects) — no throw',
+    name: 'vibrancy build-time effects (WindowBuilder::effects) — validated param + created',
     category: 'side-effect',
     async fn() {
+      await skipOnMobile('build-time window effects are cfg(desktop)-only — the mobile build consumes the effect/radius params without applying them, so the validation arm below cannot fire there');
       // create_transparent_window with effect param applies effects at build time
       // (registerController inject), distinct from runtime setEffects (AttributeUpdater).
+      // Negative control first (review tauri#262 item 12): the command's effect
+      // parser must reject an unknown name — this validates the param is really
+      // parsed and dispatched, not silently dropped.
+      let rejected = false;
+      try {
+        await invoke('create_transparent_window', { windowId: 'test-vibrancy-build-bogus-' + Date.now(), effect: 'zz-bogus', radius: 25 });
+      } catch (e) {
+        rejected = String(e).includes('unknown effect');
+      }
+      assert(rejected, 'create_transparent_window with an unknown effect should reject with "unknown effect" — a resolve (or a different error) means the effect param is not reaching the parser');
       const windowId = 'test-vibrancy-build-' + Date.now();
       await invoke('create_transparent_window', { windowId, effect: 'Blur', radius: 25 });
       const win = await WebviewWindow.getByLabel(windowId);
       if (!win) throw new Error('build-time effects window not created');
       // Intentionally NOT closing — leave for manual Close All cleanup.
-      assert(true, 'build-time effects window created without throw');
     },
   },
   // ─── Transparent UIAbility window (instance + builder.transparent(true)) ───

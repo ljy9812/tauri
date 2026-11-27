@@ -89,15 +89,6 @@ When `result.window_kind` is `None` or `"dialog"`, `handleWindowNew` SHALL use t
 - **WHEN** JavaScript calls `window.open(url)` and the Tauri handler returns `Deny`
 - **THEN** `setWebController(null)` SHALL be called (unchanged behavior)
 
-### Requirement: generate_window_id NAPI function
-
-A `generate_window_id() -> i64` NAPI function SHALL be available for ArkTS to obtain unique window IDs. It SHALL use the same `NEXT_WINDOW_ID` atomic counter as `create_os_window`, ensuring no ID collision between Rust-created and ArkTS-created windows.
-
-#### Scenario: ArkTS generates unique window ID
-- **WHEN** ArkTS calls `generateWindowId()` before creating a sub-window
-- **THEN** the returned ID SHALL be unique (no collision with Rust-generated IDs)
-- **AND** the ID SHALL be suitable for passing to `WindowManager.createSubWindow`
-
 ### Requirement: Platform limitation — no webview injection
 
 OHOS `Create` SHALL NOT inject a user-provided webview instance (unlike desktop where `Create { webview }` supplies a pre-built webview). This is a platform limitation: OHOS `onWindowNew` only provides `handler.setWebController(ctrl)`, which accepts a `WebviewController` — not a `Web` component instance. The `window_id` from `Create { window_id }` is not used for webview lookup on OHOS.

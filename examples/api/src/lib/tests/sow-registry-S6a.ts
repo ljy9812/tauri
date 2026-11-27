@@ -1,7 +1,7 @@
 import type { SowItem } from './sow-registry';
 
 // SOW §六 插件生态（行 1-13）：100 条（90✅/7🟡/1⚠️/2❌，1109 审计口径）
-// 权威源：D:\支撑Task\ohos-sow-20260909.md L114-126；判定与证据：doc/sow/sow-blocks-2026-11.md BLOCK 2（§六 18 条非✅复核，落在本段 7 条）
+// 权威源：D:\支撑Task\ohos-sow-20260909.md L114-126；判定与证据：1109 逐条对账结果落档于本表（§六 18 条非✅复核，落在本段 7 条）
 // 注：任务书摘要「90 条」为算术偏差——逐行 9/9/19/7/9/5/5/6/10/9/7/2/3 实和=100，逐格枚举以 SOW 原文为准（id 连续编至 S6-100，后续分片自 S6-101 起）。
 // plan：B×2（S6-009 剪贴板大图 / S6-069 统一日志输出）、C2×4（S6-081 fs.open+write / S6-082 readTextFileLines / S6-092 store.reset / S6-096 sql :memory:）。
 // 层级：std=无条件进 allTests（plugins/ohos-gap/ohos-mobile-plugins/core/risk-supplement 等）；cov=仅 VITE_COVERAGE_TESTS（driver-generated 的 driver:/side-replay:/bad-input:、api-gap 的 api-gap:、fault-injection 的 fault:）。
@@ -636,7 +636,7 @@ export const sowS6a: SowItem[] = [
       '@tauri-apps/plugin-log.attachConsole',
     ],
     plan: { kind: 'auto', batch: 'B' },
-    note: 'B 批已补（plugins.ts）：attachLogger 回环（wired 平台断言 marker 捕获+level+unlisten 停投递）+ attachConsole（API 面+unlisten）。OHOS 平台真值=统一到 hilog：app 配置 skip_logger+仅 Stdout target、全局 logger=ohos_log，log://log 事件不发（回环臂 honest skip 披露）；两用例各发 sow-log-<uniq> marker，JS info()→Rust log 命令→ohos_log→hilog，验证轮 grep hilog `sow-log-` 即统一输出设备级证据。五个分级 smoke（S6-064..068）不等价于统一输出',
+    note: 'B 批已补（plugins.ts）：attachLogger 回环（wired 平台断言 marker 捕获+level+unlisten 停投递）+ attachConsole（API 面+unlisten）。OHOS 平台真值=统一到 hilog：app 配置 skip_logger+仅 Stdout target、全局 logger=ohos_log，log://log 事件不发（回环臂 honest skip 披露，见 1127 修订）；无条件可失败断言=两用例的 UnlistenFn 类型断言 + info() 走 plugin:log|log 命令（插件未注册/命令未路由即红）——「OK 不建在 skip 上」的本条底线由此承重；两用例各发 sow-log-<uniq> marker，JS info()→Rust log 命令→ohos_log→hilog，验证轮 grep hilog `sow-log-` 即统一输出设备级证据。五个分级 smoke（S6-064..068）不等价于统一输出',
   },
 
   // ── 系统信息（10 条：10✅）──
@@ -692,7 +692,7 @@ export const sowS6a: SowItem[] = [
     name: '查询系统版本',
     std: ['@tauri-apps/plugin-os.version'],
     manual: ['§五|version() — 版本号返回值'],
-    note: 'ohos-gap.ts:117（任务1落地后 OHOS 断言真实版本 major>0，0.0.0 占位态诚实 skip）+ manual §五 :133 T1（文档仍写 "0.0.0" 占位预期，滞后）',
+    note: 'ohos-gap『@tauri-apps/plugin-os.version』（任务1已落地：OHOS 断言真实版本 major>0；若回落 0.0.0 占位态则诚实 skip 不误报红）+ manual §五 T1（1127 修订：文档行预期已从 "0.0.0" 占位改为真实版本——原行滞后于任务1）',
   },
   {
     id: 'S6-076',
@@ -909,7 +909,7 @@ export const sowS6a: SowItem[] = [
       'window-state save_window_state + restore_state round-trip (all flags)',
     ],
     cov: ['driver: window-state.save+restore'],
-    note: 'plugins.ts:632（filename 非空断言 + saveWindowState(SIZE)→restoreStateCurrent(SIZE)→恢复原尺寸轮询）+ core.ts:1302（全 flag 63 往返，p3-restore-state-lock-hygiene 回归防护）+ driver:436',
+    note: 'plugins『@tauri-apps/plugin-window-state.filename+save+restore』（filename 非空断言；1127 补真读回——缩到 400x300 落定→save→改 600x450→restore→轮询断言回到 400x300，review tauri#262 item 12）+ core『window-state save_window_state + restore_state round-trip (all flags)』（全 flag 63 往返，p3-restore-state-lock-hygiene 回归防护；1127 补存前/存后 innerSize 读回断言）+ driver:436',
   },
   {
     id: 'S6-099',

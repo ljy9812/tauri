@@ -135,6 +135,27 @@ export async function ohosSdkApiVersion(): Promise<number | null> {
   return cachedSdkApiVersion < 0 ? null : cachedSdkApiVersion;
 }
 
+/**
+ * True when running inside an OHOS build (the get_ohos_version_info command
+ * exists). Use for per-platform conditional assertions.
+ */
+export async function isOhos(): Promise<boolean> {
+  return (await ohosSdkApiVersion()) !== null;
+}
+
+/**
+ * Skip the current test when NOT running on OHOS — for cases whose assertion
+ * encodes an OHOS-specific contract (documented rejection paths, el2 path
+ * mappings, POSIX-normal path semantics). On Windows/Linux/macOS those
+ * semantics differ and the case would go red, violating the "OHOS changes
+ * must not leak into other platforms" rule (review tauri#262 item 18).
+ */
+export async function skipUnlessOhos(reason: string): Promise<void> {
+  if (!(await isOhos())) {
+    skip(`OHOS-contract only — ${reason}`);
+  }
+}
+
 const TEST_TIMEOUT_MS = 5000;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

@@ -372,11 +372,10 @@ fn run_dev(
       plugins::write_entry_request_permissions(
         &config.project_dir(),
         &device_type,
-        tauri_config
-          .bundle
-          .open_harmony
-          .request_permissions
-          .as_deref(),
+        super::request_permissions_for_form(
+          &tauri_config.bundle.open_harmony.request_permissions,
+          &device_type,
+        ),
       )
       .context("failed to align entry requestPermissions")?;
 

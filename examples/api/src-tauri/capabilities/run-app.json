@@ -85,6 +85,8 @@
     "allow-clear-tracked-events",
     "allow-track-webview-viewport-probe",
     "allow-get-tracked-webview-viewport-probes",
+    "allow-track-storage-isolation-probe",
+    "allow-get-tracked-storage-isolation-reports",
     "allow-emit-test-event",
     "allow-setup-app-listener",
     "allow-test-async-spawn",

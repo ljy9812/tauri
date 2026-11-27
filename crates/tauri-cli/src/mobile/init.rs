@@ -269,15 +269,15 @@ fn exec(
         system_bar_content_color(&tauri_config),
       );
 
-      // Entry module.json5 requestPermissions: when configured, the list
-      // replaces the scaffold baseline wholesale (issue
-      // Eulogizethesun/tauri#220) - pre-serialized JSON like
-      // `form-device-types` so the triple-brace renders it verbatim; unset
-      // config leaves the baseline untouched.
-      let (request_permissions_set, request_permissions_json) =
+      // Entry module.json5 requestPermissions, PER FORM (review tauri#262
+      // item 5): a configured form's list replaces that form's scaffold
+      // baseline wholesale (issue Eulogizethesun/tauri#220) — pre-serialized
+      // JSON like `form-device-types` so the triple-brace renders it
+      // verbatim; unset config (whole field, or that form's key) leaves that
+      // form's baseline untouched. Injected per form in the entry render
+      // loop (project.rs), not into the global map.
+      let (mobile_request_permissions, desktop_request_permissions) =
         entry_request_permissions(&tauri_config)?;
-      map.insert("form-request-permissions-set", request_permissions_set);
-      map.insert("form-request-permissions", request_permissions_json);
 
       let detected_plugins =
         super::open_harmony::plugins::detect_all_plugins(dirs.tauri).unwrap_or_default();
@@ -315,6 +315,8 @@ fn exec(
         plugin_metadata.clone(),
         &mobile_device_types_str,
         &desktop_device_types_str,
+        mobile_request_permissions.as_deref(),
+        desktop_request_permissions.as_deref(),
       )?;
 
       if !plugin_metadata.is_empty() {
@@ -410,25 +412,32 @@ fn system_bar_content_color(tauri_config: &Config) -> String {
   }
 }
 
-/// Renders the configured `bundle.openHarmony.requestPermissions` as the
-/// pre-serialized JSON string of the `form-request-permissions` template
-/// variable (validated and normalized to the OS object elements by the same
-/// helper the build-time rewrite uses). Returns `(false, "")` when unset: the
-/// entry module.json5 templates keep their scaffold baseline (issue
-/// Eulogizethesun/tauri#220).
-fn entry_request_permissions(tauri_config: &Config) -> crate::Result<(bool, String)> {
-  match tauri_config
+/// Renders the configured `bundle.openHarmony.requestPermissions` PER FORM
+/// (review tauri#262 item 5) as the pre-serialized JSON strings of the
+/// `form-request-permissions` template variable: `(mobile, desktop)`, each
+/// `Some(validated JSON)` only when that form is configured, `None` when the
+/// field — or that form's key — is unset (the entry module.json5 templates
+/// keep that form's scaffold baseline, issue Eulogizethesun/tauri#220). Each
+/// form's list is validated and normalized to the OS object elements by the
+/// same helper the build-time rewrite uses.
+fn entry_request_permissions(
+  tauri_config: &Config,
+) -> crate::Result<(Option<String>, Option<String>)> {
+  let per_form = tauri_config
     .bundle
     .open_harmony
     .request_permissions
-    .as_deref()
-  {
-    Some(permissions) => Ok((
-      true,
-      super::open_harmony::plugins::request_permissions_json(permissions)?,
-    )),
-    None => Ok((false, String::new())),
-  }
+    .as_ref();
+  let render = |list: Option<&[tauri_utils::config::OhosRequestPermission]>| match list {
+    Some(permissions) => {
+      super::open_harmony::plugins::request_permissions_json(permissions).map(Some)
+    }
+    None => Ok(None),
+  };
+  Ok((
+    render(per_form.and_then(|p| p.mobile.as_deref()))?,
+    render(per_form.and_then(|p| p.desktop.as_deref()))?,
+  ))
 }
 
 pub(crate) fn handlebars(app: &App) -> (Handlebars<'static>, JsonMap) {
@@ -822,25 +831,34 @@ mod tests {
   fn entry_request_permissions_serializes_the_configured_list() {
     // Issue Eulogizethesun/tauri#220: the configured list is pre-serialized
     // (compact JSON, same shape the OS expects) for the template's
-    // triple-brace.
+    // triple-brace. Per-form (review tauri#262 item 5): each configured form
+    // returns its own list; the unconfigured form returns None.
     let config = config_from(
-      r##"{"identifier":"com.example.test","bundle":{"openHarmony":{"requestPermissions":[
-        "ohos.permission.INTERNET",
-        {"name":"ohos.permission.READ_PASTEBOARD","reason":"$string:reason_clipboard","usedScene":{"abilities":["EntryAbility"],"when":"inuse"}}
-      ]}}}"##,
+      r##"{"identifier":"com.example.test","bundle":{"openHarmony":{"requestPermissions":{
+        "mobile":[
+          "ohos.permission.INTERNET",
+          {"name":"ohos.permission.READ_PASTEBOARD","reason":"$string:reason_clipboard","usedScene":{"abilities":["EntryAbility"],"when":"inuse"}}
+        ],
+        "desktop":["ohos.permission.INTERNET"]
+      }}}}"##,
     );
-    let (set, json) = entry_request_permissions(&config).unwrap();
-    assert!(set);
+    let (mobile, desktop) = entry_request_permissions(&config).unwrap();
     assert_eq!(
-      json,
-      r#"[{"name":"ohos.permission.INTERNET"},{"name":"ohos.permission.READ_PASTEBOARD","reason":"$string:reason_clipboard","usedScene":{"abilities":["EntryAbility"],"when":"inuse"}}]"#
+      mobile.as_deref(),
+      Some(
+        r#"[{"name":"ohos.permission.INTERNET"},{"name":"ohos.permission.READ_PASTEBOARD","reason":"$string:reason_clipboard","usedScene":{"abilities":["EntryAbility"],"when":"inuse"}}]"#
+      )
+    );
+    assert_eq!(
+      desktop.as_deref(),
+      Some(r#"[{"name":"ohos.permission.INTERNET"}]"#)
     );
   }
 
   #[test]
   fn entry_request_permissions_fails_fast_on_non_ohos_names() {
     let config = config_from(
-      r##"{"identifier":"com.example.test","bundle":{"openHarmony":{"requestPermissions":["android.permission.INTERNET"]}}}"##,
+      r##"{"identifier":"com.example.test","bundle":{"openHarmony":{"requestPermissions":{"desktop":["android.permission.INTERNET"]}}}}"##,
     );
     let err = entry_request_permissions(&config).unwrap_err().to_string();
     assert!(
@@ -855,8 +873,19 @@ mod tests {
     let config = config_from(r##"{"identifier":"com.example.test"}"##);
     assert_eq!(
       entry_request_permissions(&config).unwrap(),
-      (false, String::new())
+      (None::<String>, None::<String>)
     );
+    // The field set but this form's key unset: that form keeps its baseline
+    // too (review tauri#262 item 5 - per-form replace, per-form keep).
+    let config = config_from(
+      r##"{"identifier":"com.example.test","bundle":{"openHarmony":{"requestPermissions":{"desktop":["ohos.permission.INTERNET"]}}}}"##,
+    );
+    let (mobile, desktop) = entry_request_permissions(&config).unwrap();
+    assert_eq!(
+      mobile, None,
+      "an unconfigured mobile form must keep its scaffold baseline"
+    );
+    assert!(desktop.is_some());
   }
 
   #[test]

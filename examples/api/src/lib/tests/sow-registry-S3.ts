@@ -1,7 +1,7 @@
 import type { SowItem } from './sow-registry';
 
 // SOW §三 tauri 应用框架与事件：61 条（C1b 后 61✅/0🟡）
-// 权威源：D:\支撑Task\ohos-sow-20260909.md L62-71；判定与证据：doc/sow/sow-blocks-2026-11.md BLOCK 3
+// 权威源：D:\支撑Task\ohos-sow-20260909.md L62-71；判定与证据：1109 逐条对账结果落档于本表（原 BLOCK 转录稿已删）
 // 1109 审计 35✅/26🟡 → B/C1a 后 42✅/19🟡 → C1b（2026-11-10，19 条：app-info 8 + 目录 11）后 61✅/0🟡，plan 字段保留处置史。
 export const sowS3: SowItem[] = [
   // ── 应用信息与主题（12 条：4✅/8🟡）──
@@ -118,6 +118,7 @@ export const sowS3: SowItem[] = [
     name: '设置Dock可见',
     std: ['@tauri-apps/api/app.setDockVisibility (non-macOS no-op contract)'],
     cov: ['api-gap: app.set_dock_visibility'],
+    contract: 'reject', // 1127 诚实分档：判据=契约性 no-op 干净 resolve（见 note）
     plan: { kind: 'auto', batch: 'C1b' },
     note: 'C1b 转性落地（2026-11-10）：计划稿列 manual（判据 dock 图标消失/恢复），源码实证 set_dock_visibility 在非 macOS 全为 no-op 返回 Ok（plugin.rs:108-110），OHOS 无 macOS 式 Dock、manual 判据定义性不可验——转 auto 契约断言（#237 诚实契约先例）：双向调用干净 resolve 即链路验证',
   },
@@ -559,6 +560,7 @@ export const sowS3: SowItem[] = [
     name: '读取运行时目录',
     std: ['@tauri-apps/api/path.runtimeDir (OHOS defined-absent, android-aligned)'],
     cov: ['driver: path.runtimeDir'],
+    contract: 'reject', // 1127 诚实分档：判据=定义性缺席的必然干净拒绝（见 note）
     plan: { kind: 'auto', batch: 'C1b' },
     note: 'C1b 已落地（2026-11-10）：BaseDirectory::Runtime 被 cfg(not(android), not(ohos)) 摘除（path/mod.rs:175，上游 Android 同款定义性缺席）——断「必然干净拒绝」探针（resolve=枚举泄漏才 FAIL）；cov 层 driver 盲调经 blind() 吞拒绝，不构成证据',
   },

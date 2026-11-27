@@ -4,7 +4,7 @@ import type { SowItem } from './sow-registry';
 // 行 1-13 = 100 条（S6-001..S6-100，另片），本片为行 14-26 = S6-101..S6-157。
 // 判定口径：✅=std 真断言（数组里 auto/side-effect 类别条目）或 manual_tests.md T0/T1 行；
 // 🟡=仅 cov（driver: / side-replay: / bad-input: / api-gap: / fault:）；⚠️=空 fn 占位；❌=全空。
-// 条目权威源：D:\支撑Task\ohos-sow-20260909.md L127-139；复核：doc/sow/sow-blocks-2026-11.md BLOCK 2。
+// 条目权威源：D:\支撑Task\ohos-sow-20260909.md L127-139；复核：1109 逐条对账结果落档于本表。
 export const sowS6b: SowItem[] = [
   // ── 行 14 持久化授权（plugin-persisted-scope）──
   {

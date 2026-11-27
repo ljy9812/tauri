@@ -2,10 +2,11 @@
 // sow-check.mjs — SOW 能力清单 × 套件用例账目机检门（Phase A2，plan: sprightly-frolicking-stroustrup）
 //
 // 用法：
-//   node scripts/sow-check.mjs            # 全量校验（exit 0=绿，1=红，2=降级跑非全绿口径）
+//   node scripts/sow-check.mjs            # 全量校验（exit 0=绿，1=红，2=降级跑非全绿口径）；
+//                                        #   默认即严格档（三件套/plan-gap 由 WARN 升 FAIL）
 //   node scripts/sow-check.mjs --selftest # 变异红臂：5 个内置变异逐一必须令 verify 报错
 //   node scripts/sow-check.mjs --json out.json   # 附带 JSON 账目落盘
-//   node scripts/sow-check.mjs --final    # 严格档（三件套完整性由 WARN 升 FAIL，Phase D 勾销门）
+//   node scripts/sow-check.mjs --loose    # 宽档（三件套/plan-gap 只 WARN；旧默认档）
 //   node scripts/sow-check.mjs --allow-degraded  # 显式接受降级跑（降级档且无 catalog 错误时才 exit 0）
 //
 // 求值主路径：glob 解析 esbuild（tauri\node_modules\.pnpm\esbuild@*）→ bundle 两个入口
@@ -13,8 +14,10 @@
 // esbuild 不可达时降级为正则提取（degraded:true，仅存在性检查；name 重复或数量=0 仍硬 FAIL）。
 // 降级档默认 fail-closed：exit 2（≠全绿口径），--allow-degraded 显式 opt-in 才 exit 0。
 //
-// 判定四档（推导，不手填）：✅=有 std 非 manual 锚 或 有文档行；🟡=仅 cov；⚠️=仅 manual 锚
-// 无文档行；❌=全空；plan.kind='excluded' 单列。对账目标 = SOW_BASELINE_1109（1109 审计）。
+// 判定六档（推导，不手填）：✅=有 std 非 manual 锚 或 有非拒答文档行；⏭contract=条目登记
+// contract:'reject'（PASS 判据=平台显式拒绝/契约性 no-op/定义性缺席）；⏭docSkip=文档锚全是
+// 拒答行（平台限制 SKIP / 当前无法验证）；🟡=仅 cov；⚠️=仅 manual 锚无文档行；❌=全空；
+// plan.kind='excluded' 单列。对账目标 = SOW_BASELINE_1127（1127 诚实分档口径）。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -119,6 +122,10 @@ function regexExtractTests() {
 // 分节 ^## 中文序号、 + ^### N.N 子节（两者都可被注册表锚引用）；
 // 表格按列头名定位（含「用例名称」才是用例表 → 9/10/8 列变体自动兼容，统计小表天然跳过）；
 // 分裂前处理 \| 转义；✅ 归一只作用于用例名称/级别两 cell。
+// 行 status 分类（review tauri#262 item 11）：行内自带处置的「拒答行」不计入 ✅ 依据——
+// 只认两个精确标记（/平台限制\s*SKIP/ 与 /当前无法(人工)?验证/，当前各恰命中 1 行）。
+// 注意不能用 /占位/ 之类宽标记：§36.6 NativeIcon PASS 行含「占位符」、§7 Dialog 行含
+// 「占位用例」，全是误报。
 export function parseManualDoc(text) {
   const lines = text.split(/\r?\n/);
   const rows = [];
@@ -163,11 +170,15 @@ export function parseManualDoc(text) {
             const nameCell = (cells[nameIdx] || '').replace(/^✅\s*/, '').replace(/\s*✅\s*$/, '').trim();
             const levelCell = levelIdx >= 0 ? (cells[levelIdx] || '') : '';
             const levels = [...levelCell.matchAll(/T([01])/g)].map((mm) => 'T' + mm[1]);
+            // 拒答行分类：整行文本命中精确标记才判 skip（见函数头注释的误报清单）
+            const rowText = cells.join(' ');
+            const isSkip = /平台限制\s*SKIP/.test(rowText) || /当前无法(人工)?验证/.test(rowText);
+            const status = isSkip ? 'skip' : 'pass';
             const rowKey = curSubKey || curKey;
             if (levels.length && nameCell) {
-              rows.push({ key: rowKey, name: nameCell, levels, hasMarker: true, lineNo: j + 1 });
+              rows.push({ key: rowKey, name: nameCell, levels, hasMarker: true, lineNo: j + 1, status });
             } else if (nameCell) {
-              rows.push({ key: rowKey, name: nameCell, levels: [], hasMarker: false, lineNo: j + 1 });
+              rows.push({ key: rowKey, name: nameCell, levels: [], hasMarker: false, lineNo: j + 1, status });
             }
           }
           j++;
@@ -266,26 +277,42 @@ export function verify({ registry, expectedCounts, baseline, catalog, docRows, w
     }
   }
 
-  // 5.3 四档推导 + 账目
-  const tally = { ok: 0, covOnly: 0, manualOnly: 0, missing: 0, excluded: 0 };
+  // 5.3 六档推导 + 账目（review tauri#262 item 11：ok 拆出两支诚实档——
+  //   contract=条目登记 contract:'reject'（PASS 判据=平台显式拒绝/契约性 no-op/定义性缺席），
+  //   docSkip=文档锚全是拒答行。判据不变，变的是「拒答也折算 ✅」的注水口径被拆出来单列。
+  //   两档均输出 warning 行（常显，不静默），且不触发 [orphan]/[missing]——它们自带处置。）
+  const tally = { ok: 0, contract: 0, docSkip: 0, covOnly: 0, manualOnly: 0, missing: 0, excluded: 0 };
   const perSection = {};
   const orphanCandidates = [];
   for (const it of registry) {
     const stdRefs = (it.std || []).map((n) => byName.get(n)).filter(Boolean);
     const hasRunnableStd = stdRefs.some((t) => t.category !== 'manual');
     const hasManualAnchor = stdRefs.some((t) => t.category === 'manual');
-    const hasDoc = (it.manual || []).some((a) => docByName.has(a.slice(1)));
+    // 文档行存在性（三件套第三腿用）与「通过行/拒答行」分档分开看
+    const docRowsFor = (it.manual || []).map((a) => docByName.get(a.slice(1))).filter(Boolean);
+    const hasDoc = docRowsFor.length > 0;
+    const hasDocPass = docRowsFor.some((r) => r.status !== 'skip');
+    const hasDocSkipOnly = hasDoc && docRowsFor.every((r) => r.status === 'skip');
     const hasCov = (it.cov || []).some((n) => byName.get(n)?.layer === 'cov');
     const isExcluded = it.plan?.kind === 'excluded';
+    const isContract = it.contract === 'reject';
     let verdict;
     if (isExcluded) verdict = 'excluded';
-    else if (hasRunnableStd || hasDoc) verdict = 'ok';
+    else if (isContract) verdict = 'contract';
+    else if (hasRunnableStd || hasDocPass) verdict = 'ok';
+    else if (hasDocSkipOnly) verdict = 'docSkip';
     else if (hasCov) verdict = 'covOnly';
     else if (hasManualAnchor) verdict = 'manualOnly';
     else verdict = 'missing';
     tally[verdict]++;
-    perSection[it.section] = perSection[it.section] || { ok: 0, covOnly: 0, manualOnly: 0, missing: 0, excluded: 0 };
+    perSection[it.section] = perSection[it.section] || { ok: 0, contract: 0, docSkip: 0, covOnly: 0, manualOnly: 0, missing: 0, excluded: 0 };
     perSection[it.section][verdict]++;
+    if (verdict === 'docSkip') {
+      warnings.push(`[doc-skip] ${it.id}（${it.name}）⏭ 文档行为拒答口径（平台限制 SKIP / 当前无法验证），不折算 ✅`);
+    }
+    if (verdict === 'contract') {
+      warnings.push(`[contract-reject] ${it.id}（${it.name}）⏭ contract:'reject' 登记：PASS 判据=平台显式拒绝/契约性 no-op/定义性缺席`);
+    }
     if (verdict === 'manualOnly' && !it.plan) {
       orphanCandidates.push(it.id);
       errors.push(`[orphan] ⚠️ 条目无处置: ${it.id}（${it.group}/${it.name}）——std manual 锚无文档行且未登记 plan`);
@@ -314,8 +341,8 @@ export function verify({ registry, expectedCounts, baseline, catalog, docRows, w
 
   // 5.5 基线对账（冻结基线=504 口径：全量 514 − §四 10 条流程级豁免；差额逐条归因——禁止改判据凑数）
   const s4Excluded = registry.filter((it) => it.section === '四' && it.plan?.kind === 'excluded').length;
-  const tallyNonS4 = { ok: tally.ok, covOnly: tally.covOnly, manualOnly: tally.manualOnly, missing: tally.missing, excluded: tally.excluded - s4Excluded };
-  for (const k of ['ok', 'covOnly', 'manualOnly', 'missing', 'excluded']) {
+  const tallyNonS4 = { ok: tally.ok, contract: tally.contract, docSkip: tally.docSkip, covOnly: tally.covOnly, manualOnly: tally.manualOnly, missing: tally.missing, excluded: tally.excluded - s4Excluded };
+  for (const k of ['ok', 'contract', 'docSkip', 'covOnly', 'manualOnly', 'missing', 'excluded']) {
     if (tallyNonS4[k] !== baseline[k]) {
       errors.push(`[baseline] ${k} = ${tallyNonS4[k]}（504 口径；全量含 §四 ${tally[k]}）≠ 冻结基线 ${baseline[k]}`);
     }
@@ -392,7 +419,12 @@ function mutate(registry, kind) {
     return { desc: '置空 excluded reason', registry: reg };
   }
   if (kind === 'make-orphan') {
-    const it = reg.find((x) => (x.manual || []).length > 0 && x.std?.length);
+    // 挑「manual+std、无 cov、非 contract 登记」的条目：变异后（去 plan+去文档行+
+    // std 换 manual 类锚）必落 ⚠️ manualOnly 且无 plan → [orphan] 臂翻红。旧版裸挑
+    // 第一个 manual+std 条目（S1-001，带 cov）——变异后先落 [plan-gap]，[orphan]
+    // 分支从未被真正走到（review tauri#262 item 13）。
+    const it = reg.find((x) => (x.manual || []).length > 0 && x.std?.length && !(x.cov || []).length && x.contract !== 'reject')
+      || reg.find((x) => (x.manual || []).length > 0 && x.std?.length);
     it.manual = [];
     it.plan = undefined;
     it.std = it.std.map(() => 'n/a');
@@ -406,7 +438,10 @@ function mutate(registry, kind) {
 export async function main() {
 const args = process.argv.slice(2);
 const SELFTEST = args.includes('--selftest');
-const FINAL = args.includes('--final');
+// 严格档默认开（review tauri#262 item 13：原 --final 旗标仓库里无任何 script/workflow
+// 调用——门是否生效取决于跑的人记不记得带旗标，等于没设门。现默认严格；--loose 显式
+// 退回旧宽档（三件套/plan-gap 只 WARN）。--final 保留为兼容别名（默认即其行为）。
+const FINAL = !args.includes('--loose');
 const ALLOW_DEGRADED = args.includes('--allow-degraded');
 const jsonIdx = args.indexOf('--json');
 const jsonEq = args.find((a) => /^--json=/.test(a));
@@ -462,7 +497,9 @@ const wrapManualNames = extractWrapManual();
 const input = {
   registry: registryModule.sowRegistry,
   expectedCounts: registryModule.SOW_EXPECTED_COUNTS,
-  baseline: registryModule.SOW_BASELINE_1109,
+  // 基线 1127（review tauri#262 item 11）：ok 拆 contract/docSkip 两支诚实档后的口径；
+  // 1109 基线在注册表里继续导出留档（历史账目，判据口径演进记录）。
+  baseline: registryModule.SOW_BASELINE_1127,
   catalog,
   docRows,
   wrapManualNames,
@@ -501,9 +538,9 @@ console.log(`SOW 账目机检（degraded=${degraded}，final=${FINAL}）`);
 console.log('═'.repeat(72));
 for (const line of p02.info) console.log('  ' + line);
 console.log('  注册表条目: ' + input.registry.length + `（${Object.entries(input.expectedCounts).map(([k, v]) => `§${k}=${input.registry.filter((x) => x.section === k).length}/${v}`).join(' ')}）`);
-console.log(`  四档: ✅${result.tally.ok} 🟡${result.tally.covOnly} ⚠️${result.tally.manualOnly} ❌${result.tally.missing} excluded ${result.tally.excluded}`);
+console.log(`  六档: ✅${result.tally.ok} ⏭contract ${result.tally.contract} ⏭docSkip ${result.tally.docSkip} 🟡${result.tally.covOnly} ⚠️${result.tally.manualOnly} ❌${result.tally.missing} excluded ${result.tally.excluded}`);
 for (const [sec, t] of Object.entries(result.perSection)) {
-  console.log(`    §${sec}: ✅${t.ok} 🟡${t.covOnly} ⚠️${t.manualOnly} ❌${t.missing} excluded${t.excluded}`);
+  console.log(`    §${sec}: ✅${t.ok} ⏭c${t.contract} ⏭d${t.docSkip} 🟡${t.covOnly} ⚠️${t.manualOnly} ❌${t.missing} excluded${t.excluded}`);
 }
 console.log('  wrapManual 按钮字面量: ' + wrapManualNames.size + ' 处');
 if (result.warnings.length) {

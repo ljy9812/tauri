@@ -84,8 +84,8 @@ fix 批另将 4 项修复的行为判据收敛进既有 std 用例（不新增 M
 - 产品源码：`tao/src/platform_impl/ohos/window.rs:1725`、`plugins-workspace/plugins/process/src/commands.rs:8-10`、`plugins-workspace/plugins/updater/src/ohos.rs:92-101`、`plugins-workspace/plugins/updater/src/lib.rs:278-283`
 - 用例源码：`examples/api/src/lib/tests/core.ts:887-925/2760-2804`、`plugins.ts:134/168/519-598/689-698/931-936`
 - 手册：`doc/manual_tests.md` 统计口径行（fix 批段）+ §三十/§三十九
-- 真机：`examples/api/test-report.md`（2026-11-12T01:51:26Z 生成，385 行 ✅374/⏭11/❌0；首轮 09:07 报告已复验覆盖，14❌ 取证在 `D:\xuqiu\tauri-3.0\fixwave-logs\`）
-- manual 归一轮：`D:\xuqiu\tauri-3.0\fixwave-logs\manual-5-4-2026-11-12.log`（hilog 双埋点 + [ManualTest] 三段/停止报文全文；CDP 独立监听读回 scaleFactor=2.47/size 2091×1324 @10:29:25.043）
+- 真机：`examples/api/test-report.md`（2026-11-12T01:51:26Z 生成，385 行 ✅374/⏭11/❌0；首轮 09:07 报告已复验覆盖，14❌ 取证留存于本仓外 fixwave 日志归档，不入公开仓）
+- manual 归一轮：fixwave 归档 `manual-5-4-2026-11-12.log`（hilog 双埋点 + [ManualTest] 三段/停止报文全文；CDP 独立监听读回 scaleFactor=2.47/size 2091×1324 @10:29:25.043，归档同上不入公开仓）
 
 ---
 

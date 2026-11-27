@@ -1,7 +1,7 @@
 import type { SowItem } from './sow-registry';
 
 // SOW §五 托盘 tray-icon：48 条（48✅，1109 审计口径）
-// 证据源（对齐 doc/sow/sow-blocks-2026-11.md BLOCK 0 逐条表）：
+// 证据源（1109 逐条对账结果落档于本表；原 BLOCK 转录稿已删）：
 // - std    = tests/tray.ts（31 条，整套 desktopOnlySuite 桌面形态门控）
 // - manual = doc/manual_tests.md §一 Tray（L19-29）/ §十四 Predefined Multi-Window（L325-338）
 // - cov    = tests/driver-generated.ts L280 cmd.simulate_tray_click（托盘相邻仅此 1 条）

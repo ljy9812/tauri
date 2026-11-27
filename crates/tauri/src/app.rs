@@ -526,9 +526,12 @@ impl<R: Runtime> AppHandle<R> {
   /// apart from a delivered change.
   ///
   /// On OHOS the wry runtime queues the receipt with the event loop and the
-  /// deferred ArkTS `setColorMode` tick fires it with the real verdict. On
-  /// every other platform the `RuntimeHandle` default implementation applies
-  /// the theme and fires the receipt immediately with `true`.
+  /// deferred ArkTS `setColorMode` tick fires it with the real verdict (at
+  /// most once — a dropped receipt falls back to the command-side timeout).
+  /// On every other platform the `RuntimeHandle` default implementation
+  /// forwards to `set_theme` and fires the receipt immediately with `true`,
+  /// which there only certifies acceptance: wry's desktop `set_theme` is a
+  /// fire-and-forget event-loop message, not a synchronous application.
   pub(crate) fn set_theme_with_receipt(
     &self,
     theme: Option<Theme>,
@@ -999,7 +1002,7 @@ macro_rules! shared_app_impl {
 
       /// Applies the theme to all native window menus. Windows only: win32
       /// menus do not follow the event-loop theme automatically. Shared by
-      /// [`Self::set_theme`] and the receipted path below.
+      /// `set_theme` and `set_theme_with_receipt` above.
       #[cfg(windows)]
       fn set_menu_theme_on_windows(&self, theme: Option<Theme>) {
         for window in self.manager.windows().values() {

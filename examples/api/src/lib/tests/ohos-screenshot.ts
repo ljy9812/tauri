@@ -111,13 +111,34 @@ export const ohosScreenshotTests: TestCase[] = [
       // Reference block: pure red, fixed in the viewport so scroll offset doesn't matter.
       const block = injectSolidBlock('#ff0000', 20, 20, 80);
       try {
+        // Settle before the first snapshot: ArkWeb's controller snapshot
+        // reflects the last PRESENTED frame, so a snapshot that races the
+        // injection reads the pre-injection (page background) frame — observed
+        // 2026-11-27 on the 2in1 as rgba(255,255,255,255). Two rAFs + a short
+        // delay let the compositor present the injected element first.
+        await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+        await new Promise((r) => setTimeout(r, 250));
         // First capture to learn the physical/CSS scale and confirm a fresh snapshot
         // contains the block.
-        const image = await mod.captureWebview();
-        const scale = image.width / window.innerWidth;
-        const x = Math.round(block.centerCssX * scale);
-        const y = Math.round(block.centerCssY * scale);
-        const color = await mod.pickColorAt(x, y);
+        let image = await mod.captureWebview();
+        let scale = image.width / window.innerWidth;
+        let x = Math.round(block.centerCssX * scale);
+        let y = Math.round(block.centerCssY * scale);
+        // Bounded re-capture: the snapshot path occasionally returns a stale or
+        // blank frame even after the settle (known ArkWeb snapshot class). The
+        // block is guaranteed-red content at a fixed spot, so a retry that
+        // still reads non-red is a real failure — the loop only absorbs the
+        // frame-timing flake, never the assertion.
+        let color = await mod.pickColorAt(x, y);
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          if (color.r > 200 && color.g < 60 && color.b < 60) break;
+          await new Promise((r) => setTimeout(r, 400));
+          image = await mod.captureWebview();
+          scale = image.width / window.innerWidth;
+          x = Math.round(block.centerCssX * scale);
+          y = Math.round(block.centerCssY * scale);
+          color = await mod.pickColorAt(x, y);
+        }
         console.log(
           `[screenshot] red block at css(${block.centerCssX},${block.centerCssY}) → snapshot(${x},${y}) scale=${scale.toFixed(3)} → rgba(${color.r},${color.g},${color.b},${color.a})`,
         );
